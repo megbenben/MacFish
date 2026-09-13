@@ -1,0 +1,22 @@
+--- a/prepared-model-catalog-B1j3jtLv.mjs
++++ b/prepared-model-catalog-B1j3jtLv.mjs
+@@ -42,7 +42,18 @@
+ 	return materialized;
+ }
+ function acceptsPreparedSnapshotConfig(snapshot, input, policy) {
+-	return policy === "published" || preparedModelRuntimeConfigsMatch(snapshot.config, input.config);
++	// [local hotfix for openclaw#128515 — NOT upstream code]
++	// A config publication does not refresh prepared model owners, so this whole-config
++	// hash check permanently rejects the published owner for read-only consumers
++	// (chat-channel reply dispatch) until the process restarts, and it re-occurs on the
++	// next publication. Upstream repairs (#128608) are merged on main but unreleased as
++	// of 2026.9.4, which is both the `latest` and `beta` dist-tag. Tolerating the
++	// published owner matches the semantics the "published" policy already had on this
++	// same line, so the only behaviour changed is that "exact" no longer throws
++	// PreparedModelCatalogConfigReplacedError on config drift. Revert by reinstalling
++	// openclaw, or restore prepared-model-catalog-B1j3jtLv.mjs.orig from
++	// ~/openclaw-plugin-backup/.
++	return true;
+ }
+ function resolveInputs(params = {}) {
+ 	const config = params.config ?? getRuntimeConfig();
