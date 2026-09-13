@@ -4,23 +4,13 @@
 
 <a href="https://trendshift.io/repositories/16144" target="_blank"><img src="https://trendshift.io/api/badge/repositories/16144" alt="666ghj%2FMacFish | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-简洁通用的群体智能引擎，预测万物
+简洁通用的群体智能引擎，预测万物--经过 AI 改写，可仅使用 Deepseek API 运行，已验证成功
 </br>
 <em>A Simple and Universal Swarm Intelligence Engine, Predicting Anything</em>
 </br>
 <sub>Forked from <a href="https://github.com/666ghj/MiroFish">MiroFish</a> — with DeepSeek + Local API dual-provider support</sub>
 
-<a href="https://www.shanda.com/" target="_blank"><img src="./static/image/shanda_logo.png" alt="666ghj%2MacFish | Shanda" height="40"/></a>
 
-[![GitHub Stars](https://img.shields.io/github/stars/megbenben/MacFish?style=flat-square&color=DAA520)](https://github.com/megbenben/MacFish/stargazers)
-[![GitHub Watchers](https://img.shields.io/github/watchers/megbenben/MacFish?style=flat-square)](https://github.com/megbenben/MacFish/watchers)
-[![GitHub Forks](https://img.shields.io/github/forks/megbenben/MacFish?style=flat-square)](https://github.com/megbenben/MacFish/network)
-[![Docker](https://img.shields.io/badge/Docker-Build-2496ED?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/megbenben/MacFish)
-
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](http://discord.gg/ePf5aPaHnA)
-[![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
-[![Instagram](https://img.shields.io/badge/Instagram-Follow-E4405F?style=flat-square&logo=instagram&logoColor=white)](https://www.instagram.com/mirofish_ai/)
 
 [English](./README.md) | [中文文档](./README-ZH.md)
 
