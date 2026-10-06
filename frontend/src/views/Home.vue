@@ -145,7 +145,7 @@
                   ref="fileInput"
                   type="file"
                   multiple
-                  accept=".pdf,.md,.txt"
+                  :accept="ACCEPTED_EXTENSIONS.join(',')"
                   @change="handleFileSelect"
                   style="display: none"
                   :disabled="loading"
@@ -214,10 +214,23 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 
 const router = useRouter()
+const { t } = useI18n()
+
+// 唯一一份可上传扩展名清单：文件选择器的 accept 与拖拽的校验都读它，
+// 避免以前那样两处手工同步。后端常量在 utils/parsers/__init__.py。
+// 旧版 Office（.doc/.ppt/.xls）刻意保留在这里 —— 后端会针对它们给出
+// 「请另存为 .docx/.pptx/.xlsx」的可操作提示，前端提前拦掉用户就看不到了。
+const ACCEPTED_EXTENSIONS = [
+  '.pdf', '.md', '.markdown', '.txt', '.csv',
+  '.docx', '.pptx', '.xlsx', '.xlsm',
+  '.png', '.jpg', '.jpeg', '.heic', '.heif', '.tiff', '.tif', '.bmp', '.webp', '.gif',
+  '.doc', '.ppt', '.xls'
+]
 
 // 表单数据
 const formData = ref({
@@ -274,11 +287,19 @@ const handleDrop = (e) => {
 
 // 添加文件
 const addFiles = (newFiles) => {
-  const validFiles = newFiles.filter(file => {
-    const ext = file.name.split('.').pop().toLowerCase()
-    return ['pdf', 'md', 'txt'].includes(ext)
+  const accepted = newFiles.filter(file => {
+    const ext = (file.name.split('.').pop() || '').toLowerCase()
+    return ACCEPTED_EXTENSIONS.includes('.' + ext)
   })
-  files.value.push(...validFiles)
+  // 被拒的文件不再静默丢弃，明确告诉用户为什么
+  const rejected = newFiles.filter(file => !accepted.includes(file))
+  if (rejected.length) {
+    const names = rejected.map(f => f.name).join('、')
+    error.value = `${t('home.unsupportedFile')}${names}`
+  } else {
+    error.value = ''
+  }
+  files.value.push(...accepted)
 }
 
 // 移除文件

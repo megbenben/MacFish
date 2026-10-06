@@ -221,7 +221,13 @@ const handleNewProject = async () => {
       clearPendingUpload()
       currentProjectId.value = res.data.project_id
       projectData.value = res.data
-      
+
+      // 上传成功但个别文件被跳过（旧格式、加密、解析失败）时，把原因写进系统日志。
+      // 后端已把原因放在 file_results 里，不展示就等于又变回静默丢弃。
+      ;(res.data.file_results || [])
+        .filter(item => !item.ok)
+        .forEach(item => addLog(`Skipped ${item.filename}: ${item.error}`))
+
       router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
       ontologyProgress.value = null
       addLog(`Ontology generated successfully for project ${res.data.project_id}`)

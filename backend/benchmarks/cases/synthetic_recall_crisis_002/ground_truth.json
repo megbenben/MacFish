@@ -1,0 +1,39 @@
+{
+  "answer_numbers": [
+    "4.8",
+    "37"
+  ],
+  "answers": {
+    "q1": "rise"
+  },
+  "case_id": "synthetic_recall_crisis_002",
+  "events": [
+    {
+      "date": "2026-04-10",
+      "id": "e1",
+      "key_terms": [
+        "检测",
+        "公布"
+      ],
+      "source": "synthetic",
+      "text": "第三方检测机构公布结果"
+    }
+  ],
+  "key_actors_observed": [
+    "华臻电器",
+    "市场监管部门",
+    "消费者权益组织"
+  ],
+  "leakage_terms": [
+    "扩大处理范围",
+    "补充说明"
+  ],
+  "outcome_summary": "合成结果：舆情在第二周进一步发酵，第三方检测机构公布结果后热度升至高点，监管随后介入并要求补充说明，公司最终扩大了处理范围。",
+  "sources": [
+    {
+      "retrieved_at": "2026-10-06",
+      "url": "synthetic://not-a-real-source"
+    }
+  ],
+  "synthetic": true
+}

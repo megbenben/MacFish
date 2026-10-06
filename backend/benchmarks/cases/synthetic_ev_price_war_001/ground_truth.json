@@ -1,0 +1,50 @@
+{
+  "answer_numbers": [
+    "15",
+    "20",
+    "2.6"
+  ],
+  "answers": {
+    "q1": "down",
+    "q2": "intensify"
+  },
+  "case_id": "synthetic_ev_price_war_001",
+  "events": [
+    {
+      "date": "2026-02-12",
+      "id": "e1",
+      "key_terms": [
+        "启明",
+        "指导价"
+      ],
+      "source": "synthetic",
+      "text": "启明汽车调整官方指导价"
+    },
+    {
+      "date": "2026-02-20",
+      "id": "e2",
+      "key_terms": [
+        "远驰",
+        "跟进"
+      ],
+      "source": "synthetic",
+      "text": "远驰集团宣布跟进"
+    }
+  ],
+  "key_actors_observed": [
+    "启明汽车",
+    "远驰集团"
+  ],
+  "leakage_terms": [
+    "指导价调整",
+    "跟进降价"
+  ],
+  "outcome_summary": "合成结果：窗口期内主流车型终端成交价继续走低，启明汽车率先调整官方指导价，远驰集团随后跟进，行业竞争进一步加剧。",
+  "sources": [
+    {
+      "retrieved_at": "2026-10-06",
+      "url": "synthetic://not-a-real-source"
+    }
+  ],
+  "synthetic": true
+}

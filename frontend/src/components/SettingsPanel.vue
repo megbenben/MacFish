@@ -76,6 +76,69 @@
               {{ testResult.message }}
             </div>
           </div>
+
+          <!-- 文档解析 / OCR -->
+          <div class="section">
+            <div class="section-header">
+              <span class="section-icon">🔍</span>
+              <span>{{ $t('settings.docParsing') }}</span>
+            </div>
+
+            <div class="field">
+              <label>{{ $t('settings.ocrEngine') }}</label>
+              <div class="toggle-group">
+                <button
+                  v-for="option in OCROPTIONS"
+                  :key="option.value"
+                  :class="['toggle-btn', { active: ocr.engine === option.value }]"
+                  @click="ocr.engine = option.value"
+                >{{ $t(option.label) }}</button>
+              </div>
+            </div>
+
+            <div class="field">
+              <label>{{ $t('settings.ocrStatusVision', { state: t(ocrStatus.vision ? 'settings.available' : 'settings.unavailable') }) }}</label>
+              <label>{{ $t('settings.ocrStatusApi', { state: t(ocrStatus.api ? 'settings.configured' : 'settings.notConfigured') }) }}</label>
+            </div>
+
+            <p class="ocr-hint">{{ ocr.engine === 'api' ? $t('settings.ocrHintApi') : $t('settings.ocrHintLocal') }}</p>
+
+            <label class="checkbox-row">
+              <input type="checkbox" v-model="ocr.scan_pdf_fallback" />
+              <span>{{ $t('settings.ocrScanPdf') }}</span>
+            </label>
+
+            <div class="field">
+              <label>{{ $t('settings.ocrMaxPages') }}</label>
+              <input v-model.number="ocr.max_pages" type="number" min="1" max="500" />
+            </div>
+
+            <div v-show="ocr.engine !== 'vision'">
+              <div class="field">
+                <label>{{ $t('settings.ocrApiConfig') }}</label>
+              </div>
+              <div class="field">
+                <label>{{ $t('settings.apiKey') }}</label>
+                <input v-model="ocr.api.api_key" type="password" :placeholder="$t('settings.apiKeyPlaceholder')" />
+              </div>
+              <div class="field">
+                <label>{{ $t('settings.baseUrl') }}</label>
+                <input v-model="ocr.api.base_url" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+              </div>
+              <div class="field">
+                <label>{{ $t('settings.modelName') }}</label>
+                <input v-model="ocr.api.model_name" type="text" placeholder="qwen-vl-max" />
+              </div>
+            </div>
+
+            <button class="test-btn" @click="testOcr" :disabled="ocrTesting">
+              <span v-if="ocrTesting" class="spin">⟳</span>
+              {{ $t('settings.ocrTest') }}
+            </button>
+            <div v-if="ocrTestResult" :class="['test-result', ocrTestResult.ok ? 'ok' : 'fail']">
+              {{ ocrTestResult.message }}
+            </div>
+          </div>
         </div>
 
         <div class="panel-footer">
@@ -112,6 +175,23 @@ const saving = ref(false)
 const saveMessage = ref('')
 const saveOk = ref(true)
 
+// 文档解析 / OCR
+const OCROPTIONS = [
+  { value: 'auto', label: 'settings.ocrAuto' },
+  { value: 'vision', label: 'settings.ocrVisionLocal' },
+  { value: 'api', label: 'settings.ocrVisionApi' },
+  { value: 'off', label: 'settings.ocrOff' }
+]
+const ocr = reactive({
+  engine: 'auto',
+  scan_pdf_fallback: true,
+  max_pages: 30,
+  api: { api_key: '', base_url: '', model_name: '' }
+})
+const ocrStatus = reactive({ vision: false, api: false })
+const ocrTesting = ref(false)
+const ocrTestResult = ref(null)
+
 onMounted(() => {
   loadSettings()
 })
@@ -134,6 +214,42 @@ async function loadSettings() {
     }
   } catch (e) {
     console.warn('Failed to load LLM settings:', e)
+  }
+  await loadOcrSettings()
+}
+
+async function loadOcrSettings() {
+  try {
+    const res = await api.get('/api/settings/ocr')
+    if (res.success && res.data) {
+      const cfg = res.data.config || {}
+      ocr.engine = cfg.engine || 'auto'
+      ocr.scan_pdf_fallback = cfg.scan_pdf_fallback !== false
+      ocr.max_pages = cfg.max_pages || 30
+      if (cfg.api) {
+        ocr.api.api_key = cfg.api.api_key || ''
+        ocr.api.base_url = cfg.api.base_url || ''
+        ocr.api.model_name = cfg.api.model_name || ''
+      }
+      const status = res.data.status || {}
+      ocrStatus.vision = !!status.vision
+      ocrStatus.api = !!status.api
+    }
+  } catch (e) {
+    console.warn('Failed to load OCR settings:', e)
+  }
+}
+
+async function testOcr() {
+  ocrTesting.value = true
+  ocrTestResult.value = null
+  try {
+    const res = await api.post('/api/settings/ocr/test', {})
+    ocrTestResult.value = res.data || { ok: false, message: 'No response' }
+  } catch (e) {
+    ocrTestResult.value = { ok: false, message: e.message || 'Test failed' }
+  } finally {
+    ocrTesting.value = false
   }
 }
 
@@ -169,6 +285,25 @@ async function saveSettings() {
       }
     }
     const res = await api.put('/api/settings/llm', payload)
+
+    // OCR 配置走独立端点，失败不应把 LLM 配置的保存结果覆盖掉
+    try {
+      await api.put('/api/settings/ocr', {
+        ocr: {
+          engine: ocr.engine,
+          scan_pdf_fallback: ocr.scan_pdf_fallback,
+          max_pages: ocr.max_pages,
+          api: {
+            api_key: ocr.api.api_key,
+            base_url: ocr.api.base_url,
+            model_name: ocr.api.model_name
+          }
+        }
+      })
+      await loadOcrSettings()
+    } catch (e) {
+      console.warn('Failed to save OCR settings:', e)
+    }
     if (res.success) {
       saveOk.value = true
       saveMessage.value = res.message || t('settings.saved')
@@ -323,6 +458,29 @@ function close() {
 
 .field input:focus {
   border-color: #FF4500;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 0.78rem;
+  color: #666;
+  cursor: pointer;
+}
+
+.checkbox-row input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+.ocr-hint {
+  margin: 0 0 14px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: #999;
 }
 
 .optional {

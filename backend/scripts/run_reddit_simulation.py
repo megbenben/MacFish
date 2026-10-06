@@ -36,6 +36,9 @@ _project_root = os.path.abspath(os.path.join(_backend_dir, '..'))
 sys.path.insert(0, _scripts_dir)
 sys.path.insert(0, _backend_dir)
 
+# 实时事件注入的共享逻辑（只认领 inject_event，其余命令留给循环结束后的 IPC 轮询）
+from ipc_live import consume_live_injections, events_for_round, fire_manual_posts  # noqa: E402
+
 # 加载项目根目录的 .env 文件（包含 LLM_API_KEY 等配置）
 from dotenv import load_dotenv
 _env_file = os.path.join(_project_root, '.env')
@@ -141,6 +144,8 @@ class CommandType:
     INTERVIEW = "interview"
     BATCH_INTERVIEW = "batch_interview"
     CLOSE_ENV = "close_env"
+    #: 运行中注入一条事件（轮循环内由 ipc_live.consume_live_injections 认领）
+    INJECT_EVENT = "inject_event"
 
 
 class IPCHandler:
@@ -211,6 +216,38 @@ class IPCHandler:
         except OSError:
             pass
     
+    async def handle_inject_event(self, command_id: str, agent_id: int, content: str) -> bool:
+        """
+        处理事件注入：把 content 以指定 Agent 的名义发成一条帖子。
+
+        轮次运行期间这条路径不会被走到（那时由 ipc_live.consume_live_injections
+        在轮循环内认领）；这里覆盖的是模拟跑完后仍在等待命令时收到注入的情况。
+        """
+        content = str(content or '').strip()
+        if not content:
+            self.send_response(command_id, "failed", error="事件内容为空")
+            return False
+
+        try:
+            agent = self.env.agent_graph.get_agent(int(agent_id))
+            await self.env.step({
+                agent: ManualAction(
+                    action_type=ActionType.CREATE_POST,
+                    action_args={"content": content}
+                )
+            })
+        except Exception as exc:
+            self.send_response(command_id, "failed", error=f"注入失败: {exc}")
+            print(f"  事件注入失败: {exc}")
+            return False
+
+        self.send_response(command_id, "completed", result={
+            "agent_id": agent_id,
+            "content": content,
+        })
+        print(f"  事件注入完成: agent_id={agent_id}")
+        return True
+
     async def handle_interview(self, command_id: str, agent_id: int, prompt: str) -> bool:
         """
         处理单个Agent采访命令
@@ -372,6 +409,14 @@ class IPCHandler:
             )
             return True
             
+        elif command_type == CommandType.INJECT_EVENT:
+            await self.handle_inject_event(
+                command_id,
+                args.get("agent_id", 0),
+                args.get("content", "")
+            )
+            return True
+
         elif command_type == CommandType.CLOSE_ENV:
             print("收到关闭环境命令")
             self.send_response(command_id, "completed", result={"message": "环境即将关闭"})
@@ -623,15 +668,40 @@ class RedditSimulationRunner:
         print("\n开始模拟循环...")
         start_time = datetime.now()
         
+        scheduled_events = event_config.get("scheduled_events", []) or []
+
         for round_num in range(total_rounds):
             simulated_minutes = round_num * minutes_per_round
             simulated_hour = (simulated_minutes // 60) % 24
             simulated_day = simulated_minutes // (60 * 24) + 1
-            
+
+            # 1) 实时注入：只认领 inject_event，其余命令留给轮次结束后的 IPC 循环。
+            #    必须在轮内轮询，否则"运行中注入变量"不可能生效。
+            try:
+                injected = consume_live_injections(self.simulation_dir)
+                if injected:
+                    fired = await fire_manual_posts(
+                        self.env, injected, None, None,
+                        round_num + 1, source='inject'
+                    )
+                    print(f"  第 {round_num + 1} 轮响应了 {fired} 条实时注入")
+            except Exception as exc:
+                print(f"  处理实时注入失败（忽略，不中断模拟）: {exc}")
+
+            # 2) 预排事件：配置里声明"在第 N 轮发生"的事件
+            due_events = events_for_round(scheduled_events, round_num)
+            if due_events:
+                fired = await fire_manual_posts(
+                    self.env, due_events, None, None,
+                    round_num + 1, source='scheduled'
+                )
+                if fired:
+                    print(f"  第 {round_num + 1} 轮触发了 {fired} 条预排事件")
+
             active_agents = self._get_active_agents_for_round(
                 self.env, simulated_hour, round_num
             )
-            
+
             if not active_agents:
                 continue
             

@@ -37,10 +37,16 @@ def main():
     app = create_app()
     
     # 获取运行配置
-    host = os.environ.get('FLASK_HOST', '0.0.0.0')
+    # 默认只监听本机回环地址：这是个无鉴权的本地应用，绑 0.0.0.0 会让同一局域网
+    # 里的任何人都能白嫖你的 LLM 额度、读取你上传的材料。需要局域网访问时
+    # 显式设置 FLASK_HOST=0.0.0.0。
+    host = os.environ.get('FLASK_HOST', '127.0.0.1')
     port = int(os.environ.get('FLASK_PORT', 5001))
     debug = Config.DEBUG
-    
+
+    if host == '0.0.0.0':
+        print("⚠️  警告: 正在监听 0.0.0.0，同一局域网内的其他设备可以无鉴权访问本服务")
+
     # 启动服务
     app.run(host=host, port=port, debug=debug, threaded=True)
 

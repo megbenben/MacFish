@@ -13,7 +13,7 @@ from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
 from ..services.text_processor import TextProcessor
-from ..utils.file_parser import FileParser
+from ..utils.file_parser import FileParser, ExtractionError
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..models.task import TaskManager, TaskStatus
@@ -178,33 +178,70 @@ def generate_ontology():
         logger.info(f"创建项目: {project.project_id}")
         
         # 保存文件并提取文本
+        #
+        # 逐个文件 try/except：一个坏文件不应该让整批上传丢掉（以前会冒泡成 500），
+        # 而且不支持/解析失败的文件必须把原因带回给用户 —— 以前是被静默跳过的。
         document_texts = []
         all_text = ""
-        
+        file_results = []
+
         for file in uploaded_files:
-            if file and file.filename and allowed_file(file.filename):
+            if not file or not file.filename:
+                continue
+
+            filename = file.filename
+
+            if not FileParser.is_supported(filename):
+                # 包含旧版 Office（.doc/.ppt/.xls）—— 给出「另存为」这类可操作的提示
+                file_results.append({
+                    "filename": filename,
+                    "ok": False,
+                    "error": FileParser.explain_unsupported(filename),
+                })
+                continue
+
+            try:
                 # 保存文件到项目目录
                 file_info = ProjectManager.save_file_to_project(
-                    project.project_id, 
-                    file, 
-                    file.filename
+                    project.project_id,
+                    file,
+                    filename
                 )
+
+                # 提取文本
+                result = FileParser.extract_text_detailed(file_info["path"])
+                text = TextProcessor.preprocess_text(result.text)
+                if not text.strip():
+                    raise ExtractionError(t('api.emptyDocument'))
+
+                document_texts.append(text)
+                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
                 project.files.append({
                     "filename": file_info["original_filename"],
                     "size": file_info["size"]
                 })
-                
-                # 提取文本
-                text = FileParser.extract_text(file_info["path"])
-                text = TextProcessor.preprocess_text(text)
-                document_texts.append(text)
-                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
-        
+                file_results.append({
+                    "filename": filename,
+                    "ok": True,
+                    "chars": len(text),
+                    "notes": result.notes,
+                })
+            except Exception as exc:
+                logger.warning(f"文件解析失败 {filename}: {exc}")
+                file_results.append({
+                    "filename": filename,
+                    "ok": False,
+                    "error": str(exc),
+                })
+
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
+            details = [f"{r['filename']}: {r.get('error', '')}"
+                       for r in file_results if not r.get('ok')]
             return jsonify({
                 "success": False,
-                "error": t('api.noDocProcessed')
+                "error": t('api.noDocProcessed') + ("\n" + "\n".join(details) if details else ""),
+                "data": {"files": file_results}
             }), 400
         
         # 保存提取的文本
@@ -243,6 +280,7 @@ def generate_ontology():
                 "ontology": project.ontology,
                 "analysis_summary": project.analysis_summary,
                 "files": project.files,
+                "file_results": file_results,
                 "total_text_length": project.total_text_length
             }
         })
@@ -574,12 +612,6 @@ def get_graph_data(graph_id: str):
     获取图谱数据（节点和边）
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": t('api.zepApiKeyMissing')
-            }), 500
-        
         builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
         graph_data = builder.get_graph_data(graph_id)
         
@@ -602,12 +634,6 @@ def delete_graph(graph_id: str):
     删除Zep图谱
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": t('api.zepApiKeyMissing')
-            }), 500
-        
         builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
         builder.delete_graph(graph_id)
         

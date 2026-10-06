@@ -27,6 +27,7 @@ class CommandType(str, Enum):
     INTERVIEW = "interview"           # 单个Agent采访
     BATCH_INTERVIEW = "batch_interview"  # 批量采访
     CLOSE_ENV = "close_env"           # 关闭环境
+    INJECT_EVENT = "inject_event"     # 运行中注入一条事件（以指定Agent的名义发帖）
 
 
 class CommandStatus(str, Enum):
@@ -161,12 +162,15 @@ class SimulationIPCClient:
                         response_data = json.load(f)
                     response = IPCResponse.from_dict(response_data)
                     
-                    # 清理命令和响应文件
-                    try:
-                        os.remove(command_file)
-                        os.remove(response_file)
-                    except OSError:
-                        pass
+                    # 清理命令和响应文件。
+                    # 两个删除必须各自 try：命令文件可能已被脚本侧（轮循环内的
+                    # 实时注入消费者）提前删掉，若共用一个 try，第一个 OSError 会让
+                    # 响应文件永远删不掉。
+                    for path in (command_file, response_file):
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
                     
                     logger.info(f"收到IPC响应: command_id={command_id}, status={response.status.value}")
                     return response
@@ -251,6 +255,34 @@ class SimulationIPCClient:
             timeout=timeout
         )
     
+    def send_inject_event(
+        self,
+        agent_id: int,
+        content: str,
+        platform: Optional[str] = None,
+        timeout: float = 30.0
+    ) -> IPCResponse:
+        """
+        发送事件注入命令：让指定 Agent 在模拟中发一条帖子。
+
+        模拟正在跑时由脚本的轮循环认领；已跑完则落入常规命令循环处理。
+
+        Args:
+            agent_id: 发布者 Agent ID（由调用方用 poster_type 解析好）
+            content: 事件内容
+            platform: 可选，"twitter" / "reddit"；不指定则两个平台都发
+            timeout: 超时时间（注入是即时的，不需要像采访那样等 LLM）
+        """
+        args: Dict[str, Any] = {"agent_id": int(agent_id), "content": content}
+        if platform:
+            args["platform"] = platform
+
+        return self.send_command(
+            command_type=CommandType.INJECT_EVENT,
+            args=args,
+            timeout=timeout
+        )
+
     def send_close_env(self, timeout: float = 30.0) -> IPCResponse:
         """
         发送关闭环境命令

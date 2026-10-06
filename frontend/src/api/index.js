@@ -72,8 +72,13 @@ export const requestWithRetry = async (requestFn, maxRetries = 3, delay = 1000) 
     try {
       return await requestFn()
     } catch (error) {
+      // 4xx 是请求本身有问题（格式不支持、参数缺失、体积超限），重试不会变好。
+      // 文件上传这类请求被重试还会把整个 multipart 重传一遍，代价很大。
+      const status = error?.response?.status
+      if (status >= 400 && status < 500) throw error
+
       if (i === maxRetries - 1) throw error
-      
+
       console.warn(`Request failed, retrying (${i + 1}/${maxRetries})...`)
       await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)))
     }

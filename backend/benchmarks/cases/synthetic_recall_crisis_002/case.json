@@ -1,0 +1,93 @@
+{
+  "assumptions": {
+    "assumed_entities": 8,
+    "assumed_hours": 48,
+    "assumed_sections": 3,
+    "minutes_per_round": 60
+  },
+  "case_id": "synthetic_recall_crisis_002",
+  "domain": "public_relations",
+  "expectations": {
+    "key_actors": [
+      {
+        "aliases": [
+          "华臻"
+        ],
+        "name": "华臻电器"
+      },
+      {
+        "aliases": [
+          "监管"
+        ],
+        "name": "市场监管部门"
+      },
+      {
+        "aliases": [],
+        "name": "消费者权益组织"
+      }
+    ],
+    "min_actions": 3,
+    "min_entities": 2,
+    "min_nodes": 3,
+    "min_report_chars": 150,
+    "questions": [
+      {
+        "answer": "rise",
+        "id": "q1",
+        "options": [
+          "rise",
+          "fall",
+          "flat"
+        ],
+        "signal_terms": {
+          "fall": [
+            "热度回落",
+            "平息",
+            "降温",
+            "熄火"
+          ],
+          "flat": [
+            "维持",
+            "持平"
+          ],
+          "rise": [
+            "热度上升",
+            "持续发酵",
+            "发酵",
+            "扩散",
+            "升温"
+          ]
+        },
+        "text": "事件舆情热度的走向？",
+        "type": "direction"
+      }
+    ],
+    "report_min_sections": 2
+  },
+  "locale": "zh",
+  "provenance": {
+    "author": "bootstrap_benchmarks.py",
+    "method": "synthetic"
+  },
+  "schema_version": 1,
+  "seed": {
+    "corpus_as_of": "2026-04-02",
+    "cutoff": "2026-04-05",
+    "documents": [
+      {
+        "doc_date": "2026-04-02",
+        "path": "corpus/incident_brief.md",
+        "sha256": "eddf94ddfe2fbc91219d451ec52db5a03d27ba51680d6fed0434bc2c6891485d"
+      }
+    ],
+    "horizon_days": 14,
+    "outcome_window": {
+      "end": "2026-04-19",
+      "start": "2026-04-05"
+    }
+  },
+  "simulation_requirement": "推演未来 14 天该召回事件的舆情走向：官方回应能否平息质疑，舆情热度会上升还是回落。",
+  "synthetic": true,
+  "synthetic_rationale": "种子材料与真实结果均为本仓库编造，仅用于验证回测框架本身，不是历史事实。",
+  "title": "合成演示：某消费品召回事件的舆情走向（14 天）"
+}

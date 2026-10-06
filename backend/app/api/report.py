@@ -12,6 +12,7 @@ from . import report_bp
 from ..config import Config
 from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
 from ..services.simulation_manager import SimulationManager
+from ..services import run_manifest
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
@@ -155,10 +156,23 @@ def generate_report():
                     progress_callback=progress_callback,
                     report_id=report_id
                 )
-                
+
                 # 保存报告
                 ReportManager.save_report(report)
-                
+
+                # 记录运行清单：模型/温度/规模/材料哈希，使这次推演可复现
+                try:
+                    manifest = run_manifest.build_for_run(
+                        simulation_id=simulation_id,
+                        report_id=report_id,
+                        project=project,
+                        state=state,
+                    )
+                    run_manifest.save_manifest(report_id, manifest)
+                except Exception as manifest_error:
+                    # 清单失败不该让报告本身失败，但必须留下日志
+                    logger.warning(f"写入运行清单失败: {manifest_error}")
+
                 if report.status == ReportStatus.COMPLETED:
                     task_manager.complete_task(
                         task_id,

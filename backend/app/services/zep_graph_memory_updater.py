@@ -238,11 +238,8 @@ class ZepGraphMemoryUpdater:
             api_key: Zep API Key（可选，默认从配置读取）
         """
         self.graph_id = graph_id
+        # api_key 仅为兼容旧签名保留；LocalGraphClient 是本地 SQLite 实现，不使用它
         self.api_key = api_key or Config.ZEP_API_KEY
-        
-        if not self.api_key:
-            raise ValueError("ZEP_API_KEY未配置")
-        
         self.client = LocalGraphClient(api_key=self.api_key)
         
         # 活动队列

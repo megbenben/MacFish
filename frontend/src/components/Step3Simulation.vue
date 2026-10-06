@@ -90,6 +90,46 @@
         </div>
       </div>
 
+      <!-- 成本预估 + 事件注入 -->
+      <div class="inject-panel">
+        <div v-if="costEstimate" class="cost-line" :class="{ over: costEstimate.budget_exceeded }">
+          <span class="cost-label">{{ $t('step3.costEstimateLabel') }}</span>
+          <span class="cost-value mono">{{ costEstimate.remaining_total }}</span>
+          <span class="cost-detail">
+            {{ $t('step3.costEstimateDetail', {
+              simulation: costEstimate.remaining_stages?.simulation || 0,
+              agents: costEstimate.assumptions?.entity_count || 0,
+              rounds: costEstimate.assumptions?.total_rounds || 0
+            }) }}
+          </span>
+        </div>
+
+        <div class="inject-row">
+          <input
+            v-model="injectContent"
+            class="inject-input"
+            type="text"
+            :placeholder="$t('step3.injectPlaceholder')"
+            :disabled="injecting"
+            @keyup.enter="handleInject"
+          />
+          <input
+            v-model="injectPosterType"
+            class="inject-type-input"
+            type="text"
+            :placeholder="$t('step3.injectPosterTypePlaceholder')"
+            :disabled="injecting"
+          />
+          <button class="inject-btn" :disabled="injecting || !injectContent.trim()" @click="handleInject">
+            <span v-if="injecting" class="loading-spinner-small"></span>
+            {{ $t('step3.injectBtn') }}
+          </button>
+        </div>
+        <div v-if="injectFeedback" class="inject-feedback" :class="injectOk ? 'ok' : 'fail'">
+          {{ injectFeedback }}
+        </div>
+      </div>
+
       <div class="action-controls">
         <button 
           class="action-btn primary"
@@ -293,7 +333,9 @@ import {
   startSimulation,
   stopSimulation,
   getRunStatus,
-  getRunStatusDetail
+  getRunStatusDetail,
+  estimateSimulationCost,
+  injectEvent
 } from '../api/simulation'
 import { generateReport } from '../api/report'
 
@@ -312,6 +354,59 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
+
+// ── 成本预估 ──
+// 模拟阶段的调用量 = 轮数 × Agent 数，是本次推演的成本大头，
+// 所以在启动前把它摆到界面上，而不是让用户跑完才发现。
+const costEstimate = ref(null)
+
+const fetchCostEstimate = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await estimateSimulationCost({
+      simulation_id: props.simulationId,
+      max_rounds: props.maxRounds || undefined
+    })
+    if (res.success) costEstimate.value = res.data
+  } catch (e) {
+    // 预估失败不该影响主流程，静默即可
+    console.warn('成本预估失败:', e)
+  }
+}
+
+// ── 事件注入 ──
+const injectContent = ref('')
+const injectPosterType = ref('')
+const injecting = ref(false)
+const injectFeedback = ref('')
+const injectOk = ref(true)
+
+const handleInject = async () => {
+  const content = injectContent.value.trim()
+  if (!content || injecting.value) return
+  injecting.value = true
+  injectFeedback.value = ''
+  try {
+    const res = await injectEvent({
+      simulation_id: props.simulationId,
+      content,
+      poster_type: injectPosterType.value.trim() || undefined
+    })
+    injectOk.value = !!res.success
+    if (res.success) {
+      injectFeedback.value = t('step3.injectOk', { agent: res.data?.agent_id ?? '?' })
+      injectContent.value = ''
+      emit('add-log', `Injected event (agent ${res.data?.agent_id}): ${content}`)
+    } else {
+      injectFeedback.value = res.error || t('step3.injectFailed')
+    }
+  } catch (e) {
+    injectOk.value = false
+    injectFeedback.value = e.message || t('step3.injectFailed')
+  } finally {
+    injecting.value = false
+  }
+}
 
 const router = useRouter()
 
@@ -689,6 +784,7 @@ watch(() => props.systemLogs?.length, () => {
 
 onMounted(() => {
   addLog(t('log.step3Init'))
+  fetchCostEstimate()
   if (props.simulationId) {
     doStartSimulation()
   }
@@ -1264,4 +1360,92 @@ onUnmounted(() => {
   animation: spin 0.8s linear infinite;
   margin-right: 6px;
 }
+</style>
+
+<style scoped>
+/* ── 成本预估 + 事件注入 ── */
+.inject-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 320px;
+  max-width: 460px;
+}
+
+.cost-line {
+  font-size: 12px;
+  color: #6B7280;
+  line-height: 1.6;
+}
+
+.cost-line.over {
+  color: #B91C1C;
+  font-weight: 600;
+}
+
+.cost-label {
+  margin-right: 4px;
+}
+
+.cost-value {
+  font-weight: 700;
+  color: #111827;
+}
+
+.cost-line.over .cost-value {
+  color: #B91C1C;
+}
+
+.inject-row {
+  display: flex;
+  gap: 6px;
+}
+
+.inject-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #D1D5DB;
+  border-radius: 4px;
+  outline: none;
+}
+
+.inject-type-input {
+  flex: 0 0 130px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #D1D5DB;
+  border-radius: 4px;
+  outline: none;
+}
+
+.inject-input:focus,
+.inject-type-input:focus {
+  border-color: #1F2937;
+}
+
+.inject-btn {
+  flex: 0 0 auto;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: #FFFFFF;
+  background: #1F2937;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.inject-btn:disabled {
+  background: #D1D5DB;
+  cursor: not-allowed;
+}
+
+.inject-feedback {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.inject-feedback.ok { color: #2E7D32; }
+.inject-feedback.fail { color: #C62828; }
 </style>

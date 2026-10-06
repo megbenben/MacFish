@@ -227,7 +227,49 @@ class OntologyGenerator:
     
     # 传给 LLM 的文本最大长度（5万字）
     MAX_TEXT_LENGTH_FOR_LLM = 50000
-    
+    # 单篇文档的保底配额，避免被超大文档饿死
+    PER_DOC_MIN_CHARS = 4000
+
+    def _allocate_documents(self, document_texts: List[str]) -> List[str]:
+        """
+        按文档比例分配 5 万字的配额（仅影响传给 LLM 的内容，不影响图谱构建）。
+
+        以前是对合并后的文本一刀切，后果有两个：传一个 300KB 的 Excel 加一个
+        20KB 的 PDF 时，PDF 会完全进不了本体生成；而且切片会落在表格中间，
+        留下一个断头的管道表格让 LLM 误读。
+
+        现在：每篇至少有 PER_DOC_MIN_CHARS 的保底配额，总量不超预算，且截断点
+        回退到最近的块边界（\\n\\n），保证表格要么完整保留、要么完全舍弃。
+        """
+        total = sum(len(text) for text in document_texts)
+        if total <= self.MAX_TEXT_LENGTH_FOR_LLM:
+            return list(document_texts)
+
+        doc_count = max(len(document_texts), 1)
+        per_doc_budget = max(self.PER_DOC_MIN_CHARS,
+                             self.MAX_TEXT_LENGTH_FOR_LLM // doc_count)
+        allocated: List[str] = []
+        remaining = self.MAX_TEXT_LENGTH_FOR_LLM
+
+        for text in document_texts:
+            if remaining <= 0:
+                allocated.append(f"...(本文档共 {len(text)} 字，因总长度超限未纳入本体分析)...")
+                continue
+
+            budget = min(len(text), per_doc_budget, remaining)
+            if budget >= len(text):
+                allocated.append(text)
+            else:
+                cut = text[:budget]
+                # 回退到最后一个块边界，避免把表格切成半截
+                head = cut.rsplit('\n\n', 1)[0] or cut
+                allocated.append(
+                    head + f"\n\n...(本文档共 {len(text)} 字，已截取前 {len(head)} 字用于本体分析)..."
+                )
+            remaining -= len(allocated[-1])
+
+        return allocated
+
     def _build_user_message(
         self,
         document_texts: List[str],
@@ -235,15 +277,9 @@ class OntologyGenerator:
         additional_context: Optional[str]
     ) -> str:
         """构建用户消息"""
-        
-        # 合并文本
-        combined_text = "\n\n---\n\n".join(document_texts)
-        original_length = len(combined_text)
-        
-        # 如果文本超过5万字，截断（仅影响传给LLM的内容，不影响图谱构建）
-        if len(combined_text) > self.MAX_TEXT_LENGTH_FOR_LLM:
-            combined_text = combined_text[:self.MAX_TEXT_LENGTH_FOR_LLM]
-            combined_text += f"\n\n...(原文共{original_length}字，已截取前{self.MAX_TEXT_LENGTH_FOR_LLM}字用于本体分析)..."
+
+        # 合并文本（按文档比例分配配额，见 _allocate_documents）
+        combined_text = "\n\n---\n\n".join(self._allocate_documents(document_texts))
         
         message = f"""## 模拟需求
 

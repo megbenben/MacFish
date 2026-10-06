@@ -1,0 +1,43 @@
+{
+  "case_id": "synthetic_recall_crisis_002",
+  "checked_at": "2026-10-06T14:36:09.454771+00:00",
+  "checks": {
+    "date_order": {
+      "corpus_as_of": "2026-04-02",
+      "cutoff": "2026-04-05",
+      "latest_doc_date": "2026-04-02",
+      "ok": true,
+      "outcome_window": {
+        "end": "2026-04-19",
+        "start": "2026-04-05"
+      }
+    },
+    "hash_integrity": {
+      "documents": [
+        {
+          "actual": "eddf94ddfe2fbc91219d451ec52db5a03d27ba51680d6fed0434bc2c6891485d",
+          "expected": "eddf94ddfe2fbc91219d451ec52db5a03d27ba51680d6fed0434bc2c6891485d",
+          "ok": true,
+          "path": "corpus/incident_brief.md"
+        }
+      ],
+      "ok": true
+    },
+    "number_leak": {
+      "hits": [],
+      "ok": true
+    },
+    "term_leak": {
+      "hits": [],
+      "ok": true
+    },
+    "timeline_leak": {
+      "future_dates": [],
+      "ok": true
+    }
+  },
+  "corpus_sha256": "eddf94ddfe2fbc91219d451ec52db5a03d27ba51680d6fed0434bc2c6891485d",
+  "ok": true,
+  "schema_version": 1,
+  "validation_sha256": "92366a6e90e4ab1e6f209ad2e85b986bfdacce8fc163f5d8d393addf87430429"
+}

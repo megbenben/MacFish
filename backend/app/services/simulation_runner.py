@@ -1489,6 +1489,68 @@ class SimulationRunner:
             }
     
     @classmethod
+    def inject_event(
+        cls,
+        simulation_id: str,
+        agent_id: int,
+        content: str,
+        platform: str = None,
+        timeout: float = 30.0
+    ) -> Dict[str, Any]:
+        """
+        向正在运行的模拟注入一条事件：让指定 Agent 发一条帖子。
+
+        环境还活着就能注入。模拟正在推进时由脚本的轮循环认领（下一轮就生效）；
+        若模拟已跑完、停留在等待命令状态，则由常规命令循环处理。
+
+        Args:
+            simulation_id: 模拟ID
+            agent_id: 发布者 Agent ID（调用方负责用 poster_type 解析）
+            content: 事件内容
+            platform: "twitter" / "reddit"；不指定则两个平台都发
+            timeout: 超时时间（注入是即时的，用不着像采访那样等 LLM）
+
+        Returns:
+            结果字典
+
+        Raises:
+            ValueError: 模拟不存在或环境未运行
+            TimeoutError: 等待响应超时
+        """
+        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        if not os.path.exists(sim_dir):
+            raise ValueError(f"模拟不存在: {simulation_id}")
+
+        ipc_client = SimulationIPCClient(sim_dir)
+        if not ipc_client.check_env_alive():
+            raise ValueError(f"模拟环境未运行或已关闭，无法注入事件: {simulation_id}")
+
+        logger.info(
+            f"发送事件注入命令: simulation_id={simulation_id}, "
+            f"agent_id={agent_id}, platform={platform}"
+        )
+
+        response = ipc_client.send_inject_event(
+            agent_id=agent_id, content=content, platform=platform, timeout=timeout
+        )
+
+        if response.status.value == "completed":
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "content": content,
+                "result": response.result,
+                "timestamp": response.timestamp,
+            }
+        return {
+            "success": False,
+            "agent_id": agent_id,
+            "content": content,
+            "error": response.error,
+            "timestamp": response.timestamp,
+        }
+
+    @classmethod
     def interview_agents_batch(
         cls,
         simulation_id: str,

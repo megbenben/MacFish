@@ -185,3 +185,19 @@ export const getSimulationHistory = (limit = 20) => {
   return service.get('/api/simulation/history', { params: { limit } })
 }
 
+/**
+ * 预估一次模拟将发起的 LLM 调用次数（不发起任何调用）
+ * @param {Object} data - { simulation_id, max_rounds?, platform? }
+ */
+export const estimateSimulationCost = (data) => {
+  return service.post('/api/simulation/estimate', data)
+}
+
+/**
+ * 向运行中的模拟注入一条事件
+ * @param {Object} data - { simulation_id, content, agent_id?, poster_type?, platform? }
+ */
+export const injectEvent = (data) => {
+  return service.post('/api/simulation/inject', data)
+}
+

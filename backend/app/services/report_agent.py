@@ -416,25 +416,126 @@ class ReportSection:
 
 
 @dataclass
+class Scenario:
+    """
+    一个情景分支。
+
+    存在的理由：单条确定性叙事支撑不了决策——决策者要的不是"会发生什么"，
+    而是"什么情况下会发生什么、我怎么提前知道"。情景树是本项目对"校准诚实度"
+    的实现载体：显式给出分支与触发条件，比给一个笃定的结论更有价值。
+    """
+    name: str
+    description: str = ""
+    trigger_conditions: List[str] = field(default_factory=list)
+    #: 相对可能性。由 LLM 自由表述（"高"/"中"/"低" 或 "约 40%"），不做数值解析
+    relative_likelihood: str = ""
+    key_actors: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "trigger_conditions": list(self.trigger_conditions),
+            "relative_likelihood": self.relative_likelihood,
+            "key_actors": list(self.key_actors),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Scenario':
+        """容错解析：字段缺失或类型不对时退化为空值，绝不抛异常。"""
+        def _as_list(value: Any) -> List[str]:
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            if isinstance(value, str) and value.strip():
+                return [value.strip()]
+            return []
+
+        return cls(
+            name=str(data.get('name') or '').strip(),
+            description=str(data.get('description') or '').strip(),
+            trigger_conditions=_as_list(data.get('trigger_conditions')),
+            relative_likelihood=str(data.get('relative_likelihood') or '').strip(),
+            key_actors=_as_list(data.get('key_actors')),
+        )
+
+    def to_markdown(self, level: int = 3) -> str:
+        prefix = '#' * level
+        lines = [f"{prefix} {self.name}", '']
+        if self.relative_likelihood:
+            lines.append(f"- **{t('report.scenarioLikelihood')}**: {self.relative_likelihood}")
+        if self.key_actors:
+            lines.append(f"- **{t('report.scenarioActors')}**: {', '.join(self.key_actors)}")
+        if lines[-1] != '':
+            lines.append('')
+        if self.description:
+            lines.append(self.description)
+            lines.append('')
+        if self.trigger_conditions:
+            lines.append(f"**{t('report.scenarioTriggers')}**")
+            lines.append('')
+            for condition in self.trigger_conditions:
+                lines.append(f"- {condition}")
+            lines.append('')
+        return '\n'.join(lines)
+
+
+@dataclass
 class ReportOutline:
     """报告大纲"""
     title: str
     summary: str
     sections: List[ReportSection]
-    
+    #: 情景分支。刻意作为 sections 的**兄弟字段**而不是塞进 sections——
+    #: 前端靠 sections 的长度与 1-based 索引做增量装配，改动它会破坏契约；
+    #: 而且 ReportManager._post_process_report 会把不在 sections 里的标题降级成粗体。
+    scenarios: List[Scenario] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "title": self.title,
             "summary": self.summary,
-            "sections": [s.to_dict() for s in self.sections]
+            "sections": [s.to_dict() for s in self.sections],
+            "scenarios": [s.to_dict() for s in self.scenarios]
         }
-    
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ReportOutline':
+        """从 dict 还原。与 to_dict 严格对称——非对称会让读回的字段静默消失。"""
+        sections = [
+            ReportSection(title=s.get('title', ''), content=s.get('content', ''))
+            for s in (data.get('sections') or [])
+            if isinstance(s, dict)
+        ]
+        scenarios = [
+            Scenario.from_dict(s)
+            for s in (data.get('scenarios') or [])
+            if isinstance(s, dict)
+        ]
+        return cls(
+            title=data.get('title', ''),
+            summary=data.get('summary', ''),
+            sections=sections,
+            scenarios=scenarios,
+        )
+
+    def scenarios_to_markdown(self) -> str:
+        """情景块。调用方必须在 _post_process_report() **之后**追加它。"""
+        if not self.scenarios:
+            return ''
+        md = f"## {t('report.scenarioSection')}\n\n"
+        md += f"> {t('report.scenarioSectionHint')}\n\n"
+        for scenario in self.scenarios:
+            md += scenario.to_markdown(level=3)
+            md += '\n'
+        return md
+
     def to_markdown(self) -> str:
         """转换为Markdown格式"""
         md = f"# {self.title}\n\n"
         md += f"> {self.summary}\n\n"
         for section in self.sections:
             md += section.to_markdown()
+        md += self.scenarios_to_markdown()
         return md
 
 
@@ -574,6 +675,16 @@ PLAN_SYSTEM_PROMPT = """\
 - 内容要精炼，聚焦于核心预测发现
 - 章节结构由你根据预测结果自主设计
 
+【情景树要求】
+除了章节结构，你还必须给出 3~5 个**互斥且有区分度**的未来情景。这是本报告最重要的部分：
+单条"会发生什么"的结论无法支撑决策，决策者需要的是"什么情况下会发生什么、以及我如何提前知道"。
+
+- 情景必须彼此真正不同（例如"价格战继续升级" / "达成默契性停火" / "监管介入打断"），
+  不要用同一个情景换三种说法
+- 每个情景必须给出**可观测的触发条件**——是现实中能看到的具体信号，不要写"如果事态恶化"这类空话
+- relative_likelihood 用 高/中/低 或百分比区间表述，不要假装精确
+- 如果模拟结果高度一致、确实只有一个可能走向，也要如实说明其余情景为何可能性低，而不是硬凑数量
+
 请输出JSON格式的报告大纲，格式如下：
 {
     "title": "报告标题",
@@ -583,10 +694,19 @@ PLAN_SYSTEM_PROMPT = """\
             "title": "章节标题",
             "description": "章节内容描述"
         }
+    ],
+    "scenarios": [
+        {
+            "name": "情景名称",
+            "description": "该情景下会发生什么",
+            "trigger_conditions": ["可在现实中观测到的触发信号1", "触发信号2"],
+            "relative_likelihood": "高/中/低 或 约X%",
+            "key_actors": ["该情景下的关键主体"]
+        }
     ]
 }
 
-注意：sections数组最少2个，最多5个元素！"""
+注意：sections数组最少2个，最多5个元素；scenarios数组最少3个，最多5个元素！"""
 
 PLAN_USER_PROMPT_TEMPLATE = """\
 【预测场景设定】
@@ -606,9 +726,11 @@ PLAN_USER_PROMPT_TEMPLATE = """\
 2. 各类人群（Agent）是如何反应和行动的？
 3. 这个模拟揭示了哪些值得关注的未来趋势？
 
-根据预测结果，设计最合适的报告章节结构。
+根据预测结果，设计最合适的报告章节结构，并给出未来情景树。
 
-【再次提醒】报告章节数量：最少2个，最多5个，内容要精炼聚焦于核心预测发现。"""
+【再次提醒】
+1. 报告章节数量：最少2个，最多5个，内容要精炼聚焦于核心预测发现。
+2. 情景数量：最少3个，最多5个；每个情景都要有可在现实中观测的触发条件。"""
 
 # ── 章节生成 prompt ──
 
@@ -1192,17 +1314,30 @@ class ReportAgent:
                     title=section_data.get("title", ""),
                     content=""
                 ))
-            
+
+            # 解析情景树。模型可能给出非 list 或含非 dict 元素，一律容错跳过，
+            # 不能因为情景解析失败把整个大纲丢掉。
+            scenarios = []
+            raw_scenarios = response.get("scenarios")
+            if isinstance(raw_scenarios, list):
+                for scenario_data in raw_scenarios:
+                    if not isinstance(scenario_data, dict):
+                        continue
+                    scenario = Scenario.from_dict(scenario_data)
+                    if scenario.name:
+                        scenarios.append(scenario)
+
             outline = ReportOutline(
                 title=response.get("title", "模拟分析报告"),
                 summary=response.get("summary", ""),
-                sections=sections
+                sections=sections,
+                scenarios=scenarios
             )
-            
+
             if progress_callback:
                 progress_callback("planning", 100, t('progress.outlinePlanComplete'))
-            
-            logger.info(t('report.outlinePlanDone', count=len(sections)))
+
+            logger.info(t('report.outlinePlanDone', count=len(sections), scenarios=len(scenarios)))
             return outline
             
         except Exception as e:
@@ -2288,12 +2423,18 @@ class ReportManager:
         
         # 后处理：清理整个报告的标题问题
         md_content = cls._post_process_report(md_content, outline)
-        
+
+        # 情景块必须在后处理**之后**追加：_post_process_report 会把所有不在
+        # outline.sections 里的标题降级成粗体，而情景块本来就该是 ## / ### 标题。
+        scenario_md = outline.scenarios_to_markdown()
+        if scenario_md:
+            md_content = md_content.rstrip() + '\n\n---\n\n' + scenario_md
+
         # 保存完整报告
         full_path = cls._get_report_markdown_path(report_id)
         with open(full_path, 'w', encoding='utf-8') as f:
             f.write(md_content)
-        
+
         logger.info(t('report.fullReportAssembled', reportId=report_id))
         return md_content
     
@@ -2462,18 +2603,9 @@ class ReportManager:
         # 重建Report对象
         outline = None
         if data.get('outline'):
-            outline_data = data['outline']
-            sections = []
-            for s in outline_data.get('sections', []):
-                sections.append(ReportSection(
-                    title=s['title'],
-                    content=s.get('content', '')
-                ))
-            outline = ReportOutline(
-                title=outline_data['title'],
-                summary=outline_data['summary'],
-                sections=sections
-            )
+            # 走 from_dict 而不是手工拼字段：手工拼接会在新增字段时静默丢数据
+            # （情景树就是这么差点丢掉一次——读回时只还原了 title/content）
+            outline = ReportOutline.from_dict(data['outline'])
         
         # 如果markdown_content为空，尝试从full_report.md读取
         markdown_content = data.get('markdown_content', '')

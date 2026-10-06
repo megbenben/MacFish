@@ -1,0 +1,49 @@
+{
+  "case_id": "synthetic_ev_price_war_001",
+  "checked_at": "2026-10-06T14:36:09.453207+00:00",
+  "checks": {
+    "date_order": {
+      "corpus_as_of": "2026-01-20",
+      "cutoff": "2026-02-01",
+      "latest_doc_date": "2026-01-20",
+      "ok": true,
+      "outcome_window": {
+        "end": "2026-03-03",
+        "start": "2026-02-01"
+      }
+    },
+    "hash_integrity": {
+      "documents": [
+        {
+          "actual": "09cdb24a45d096f76d0b54f6043c5de97bff5ce698b04d5faeb98dc89ca9ce16",
+          "expected": "09cdb24a45d096f76d0b54f6043c5de97bff5ce698b04d5faeb98dc89ca9ce16",
+          "ok": true,
+          "path": "corpus/industry_note.md"
+        },
+        {
+          "actual": "8e3c8e052d51621882bbd4f90a013585789b3a45311750d1d33eeb4eb1634035",
+          "expected": "8e3c8e052d51621882bbd4f90a013585789b3a45311750d1d33eeb4eb1634035",
+          "ok": true,
+          "path": "corpus/channel_feedback.md"
+        }
+      ],
+      "ok": true
+    },
+    "number_leak": {
+      "hits": [],
+      "ok": true
+    },
+    "term_leak": {
+      "hits": [],
+      "ok": true
+    },
+    "timeline_leak": {
+      "future_dates": [],
+      "ok": true
+    }
+  },
+  "corpus_sha256": "3c5e6b04ff8d90d03061994c43a4f000c6f5465746c89120e6f70f143942e5de",
+  "ok": true,
+  "schema_version": 1,
+  "validation_sha256": "8008b3a1eefca8f5a8297629a5408a5d2989bf6d0b7a138a4acf25a3da910ecd"
+}

@@ -1,0 +1,26 @@
+{
+  "edge_count": 11,
+  "entity_count": 6,
+  "graph_id": "mirofish_stub_synthetic_ev_price_war_001",
+  "node_count": 9,
+  "nodes": [
+    {
+      "name": "启明汽车"
+    },
+    {
+      "name": "远驰集团"
+    },
+    {
+      "name": "行业协会"
+    },
+    {
+      "name": "市场监管部门"
+    },
+    {
+      "name": "消费者权益组织"
+    },
+    {
+      "name": "经销商"
+    }
+  ]
+}

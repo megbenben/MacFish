@@ -3,6 +3,7 @@
 Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
 """
 
+import json
 import os
 import traceback
 from flask import request, jsonify, send_file
@@ -13,6 +14,9 @@ from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.simulation_config_generator import resolve_poster_agent_id
+from ..services import cost_estimator
+from ..settings import runtime_settings
 from ..utils.logger import get_logger
 from ..utils.locale import t, get_locale, set_locale
 from ..models.project import ProjectManager
@@ -57,12 +61,6 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": t('api.zepApiKeyMissing')
-            }), 500
-        
         entity_types_str = request.args.get('entity_types', '')
         entity_types = [t.strip() for t in entity_types_str.split(',') if t.strip()] if entity_types_str else None
         enrich = request.args.get('enrich', 'true').lower() == 'true'
@@ -94,12 +92,6 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": t('api.zepApiKeyMissing')
-            }), 500
-        
         reader = ZepEntityReader()
         entity = reader.get_entity_with_context(graph_id, entity_uuid)
         
@@ -127,12 +119,6 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": t('api.zepApiKeyMissing')
-            }), 500
-        
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
         reader = ZepEntityReader()
@@ -1448,6 +1434,139 @@ def generate_profiles():
 
 # ============== 模拟运行控制接口 ==============
 
+@simulation_bp.route('/inject', methods=['POST'])
+def inject_event():
+    """
+    向正在运行的模拟注入一条事件（"上帝视角"注入变量）。
+
+    请求（JSON）：
+        {
+            "simulation_id": "sim_xxxx",          // 必填
+            "content": "监管机构发布价格合规提醒",   // 必填，事件内容
+            "agent_id": 3,                         // 可选，发布者 Agent ID
+            "poster_type": "Official",             // 可选，按类型解析发布者（agent_id 优先）
+            "platform": "twitter"                  // 可选，不指定则两个平台都发
+        }
+
+    模拟正在推进时，事件会在下一轮被脚本认领并发布；模拟已结束但环境仍存活时，
+    进入常规命令循环处理。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        simulation_id = data.get('simulation_id')
+        content = str(data.get('content') or '').strip()
+
+        if not simulation_id:
+            return jsonify({"success": False, "error": t('api.requireSimulationId')}), 400
+        if not content:
+            return jsonify({"success": False, "error": t('api.requireInjectContent')}), 400
+
+        platform = data.get('platform')
+        if platform and platform not in ("twitter", "reddit"):
+            return jsonify({"success": False, "error": t('api.invalidInterviewPlatform')}), 400
+
+        state = SimulationManager().get_simulation(simulation_id)
+        if not state:
+            return jsonify({"success": False, "error": t('api.simulationNotFound', id=simulation_id)}), 404
+
+        # 解析发布者：显式 agent_id 优先，其次按 poster_type 匹配，最后用影响力最高者
+        agent_id = data.get('agent_id')
+        if agent_id is None:
+            agent_configs = []
+            config_path = os.path.join(Config.OASIS_SIMULATION_DATA_DIR,
+                                       simulation_id, 'simulation_config.json')
+            if os.path.isfile(config_path):
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as handle:
+                        agent_configs = (json.load(handle) or {}).get('agent_configs') or []
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(f"读取模拟配置失败，将使用默认发布者: {exc}")
+            agent_id = resolve_poster_agent_id(data.get('poster_type') or '', agent_configs)
+        else:
+            try:
+                agent_id = int(agent_id)
+            except (TypeError, ValueError):
+                return jsonify({"success": False, "error": t('api.invalidAgentId')}), 400
+
+        result = SimulationRunner.inject_event(
+            simulation_id=simulation_id,
+            agent_id=agent_id,
+            content=content,
+            platform=platform,
+        )
+
+        return jsonify({"success": result.get("success", False), "data": result})
+
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+    except TimeoutError as e:
+        return jsonify({"success": False, "error": t('api.injectTimeout', error=str(e))}), 504
+    except Exception as e:
+        logger.error(f"事件注入失败: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/estimate', methods=['POST'])
+def estimate_simulation_cost():
+    """
+    预估一次模拟将发起的 LLM 调用次数（不发起任何调用）。
+
+    请求（JSON）：
+        {
+            "simulation_id": "sim_xxxx",   // 必填
+            "max_rounds": 10,              // 可选
+            "platform": "parallel"         // 可选
+        }
+
+    返回各阶段的调用次数、已完成阶段、以及**剩余**调用数（预算判断用后者）。
+    模拟阶段的数字是上界——假设每个 Agent 每轮都行动。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        simulation_id = data.get('simulation_id')
+        if not simulation_id:
+            return jsonify({
+                "success": False,
+                "error": t('api.requireSimulationId')
+            }), 400
+
+        max_rounds = data.get('max_rounds')
+        if max_rounds is not None:
+            try:
+                max_rounds = int(max_rounds)
+            except (ValueError, TypeError):
+                return jsonify({
+                    "success": False,
+                    "error": t('api.maxRoundsInvalid')
+                }), 400
+
+        platform = data.get('platform', 'parallel')
+        estimate = cost_estimator.estimate_for_simulation(
+            simulation_id, max_rounds=max_rounds, platform=platform
+        )
+
+        budget = runtime_settings.get_budget_config()
+        budget_max = int(budget.get('max_calls') or 0)
+        estimate['budget_max_calls'] = budget_max
+        estimate['budget_exceeded'] = bool(budget_max > 0 and estimate['remaining_total'] > budget_max)
+
+        return jsonify({"success": True, "data": estimate})
+
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        logger.error(f"成本预估失败: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 @simulation_bp.route('/start', methods=['POST'])
 def start_simulation():
     """
@@ -1534,6 +1653,28 @@ def start_simulation():
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
+
+        # 预算护栏：模拟阶段的 LLM 调用量与"Agent 数 × 轮数"成正比，规模一大就是
+        # 一笔真金白银。预估超过上限时拒绝启动，除非显式 force。
+        budget = runtime_settings.get_budget_config()
+        budget_max = int(budget.get('max_calls') or 0)
+        estimate = None
+        if budget_max > 0:
+            try:
+                estimate = cost_estimator.estimate_for_simulation(
+                    simulation_id, max_rounds=max_rounds, platform=platform
+                )
+            except Exception as exc:
+                logger.warning(f"成本预估失败，跳过预算护栏: {exc}")
+
+        if estimate and estimate['remaining_total'] > budget_max and not force:
+            return jsonify({
+                "success": False,
+                "error": t('api.budgetExceeded',
+                           estimated=estimate['remaining_total'],
+                           limit=budget_max),
+                "data": estimate,
+            }), 400
 
         force_restarted = False
         

@@ -244,10 +244,8 @@ class DeepSeekGraphExtractor:
             name = (ent.get("name") or "").strip()
             if not name:
                 continue
-            node_uuid = str(uuid_mod.uuid4())
-            name_to_uuid[name.lower()] = node_uuid
             node = LocalNode(
-                uuid_=node_uuid,
+                uuid_=str(uuid_mod.uuid4()),
                 name=name,
                 labels=[ent.get("type", "Unknown")],
                 summary=ent.get("summary", ""),
@@ -255,7 +253,10 @@ class DeepSeekGraphExtractor:
                 graph_id=graph_id,
                 created_at=now,
             )
-            self.store.upsert_node(node)
+            # 以库返回的规范节点为准：若该实体在图中已存在，upsert_node 会复用
+            # 已有 uuid，下面的边必须指向那个 uuid，否则会连到不存在的节点
+            node = self.store.upsert_node(node)
+            name_to_uuid[name.lower()] = node.uuid_
             nodes.append(node)
 
         # 创建边
@@ -270,25 +271,25 @@ class DeepSeekGraphExtractor:
 
             # 如果源或目标实体不存在，创建占位节点
             if not source_uuid:
-                source_uuid = str(uuid_mod.uuid4())
-                name_to_uuid[source_name.lower()] = source_uuid
                 node = LocalNode(
-                    uuid_=source_uuid, name=source_name,
+                    uuid_=str(uuid_mod.uuid4()), name=source_name,
                     labels=["Unknown"], summary="",
                     attributes={}, graph_id=graph_id, created_at=now,
                 )
-                self.store.upsert_node(node)
+                node = self.store.upsert_node(node)
+                source_uuid = node.uuid_
+                name_to_uuid[source_name.lower()] = source_uuid
                 nodes.append(node)
 
             if not target_uuid:
-                target_uuid = str(uuid_mod.uuid4())
-                name_to_uuid[target_name.lower()] = target_uuid
                 node = LocalNode(
-                    uuid_=target_uuid, name=target_name,
+                    uuid_=str(uuid_mod.uuid4()), name=target_name,
                     labels=["Unknown"], summary="",
                     attributes={}, graph_id=graph_id, created_at=now,
                 )
-                self.store.upsert_node(node)
+                node = self.store.upsert_node(node)
+                target_uuid = node.uuid_
+                name_to_uuid[target_name.lower()] = target_uuid
                 nodes.append(node)
 
             edge = LocalEdge(

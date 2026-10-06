@@ -156,6 +156,7 @@ def init_logging_for_simulation(simulation_dir: str):
 
 
 from action_logger import SimulationLogManager, PlatformActionLogger
+from ipc_live import consume_live_injections, events_for_round, fire_manual_posts
 
 try:
     from camel.models import ModelFactory
@@ -212,6 +213,9 @@ class CommandType:
     INTERVIEW = "interview"
     BATCH_INTERVIEW = "batch_interview"
     CLOSE_ENV = "close_env"
+    #: 运行中注入一条事件。轮循环内由 ipc_live.consume_live_injections 认领；
+    #: 若在轮次结束后才到达，则由下面的 process_commands 处理。
+    INJECT_EVENT = "inject_event"
 
 
 class ParallelIPCHandler:
@@ -342,6 +346,61 @@ class ParallelIPCHandler:
         except Exception as e:
             return {"platform": platform, "error": str(e)}
     
+    async def handle_inject_event(
+        self, command_id: str, agent_id: int, content: str, platform: str = None
+    ) -> bool:
+        """
+        处理事件注入：把 content 以指定 Agent 的名义发成一条帖子。
+
+        轮次运行期间这条路径不会被走到（那时由 ipc_live.consume_live_injections
+        在轮循环内认领）；这里覆盖的是模拟跑完后仍在等待命令时收到注入的情况。
+        """
+        content = str(content or '').strip()
+        if not content:
+            self.send_response(command_id, "failed", error="事件内容为空")
+            return False
+
+        targets = []
+        if platform in ("twitter", "reddit"):
+            env = self.twitter_env if platform == "twitter" else self.reddit_env
+            if env:
+                targets.append((platform, env))
+        else:
+            if self.twitter_env:
+                targets.append(("twitter", self.twitter_env))
+            if self.reddit_env:
+                targets.append(("reddit", self.reddit_env))
+
+        if not targets:
+            self.send_response(command_id, "failed", error="没有可用的模拟环境")
+            return False
+
+        delivered = []
+        for platform_name, env in targets:
+            try:
+                agent = env.agent_graph.get_agent(int(agent_id))
+                await env.step({
+                    agent: ManualAction(
+                        action_type=ActionType.CREATE_POST,
+                        action_args={"content": content}
+                    )
+                })
+                delivered.append(platform_name)
+            except Exception as exc:
+                print(f"  [inject_event] {platform_name} 注入失败: {exc}")
+
+        if not delivered:
+            self.send_response(command_id, "failed", error="所有平台注入均失败")
+            return False
+
+        self.send_response(command_id, "completed", result={
+            "agent_id": agent_id,
+            "content": content,
+            "platforms": delivered,
+        })
+        print(f"  事件注入完成: agent_id={agent_id}, platforms={delivered}")
+        return True
+
     async def handle_interview(self, command_id: str, agent_id: int, prompt: str, platform: str = None) -> bool:
         """
         处理单个Agent采访命令
@@ -591,6 +650,15 @@ class ParallelIPCHandler:
             )
             return True
             
+        elif command_type == CommandType.INJECT_EVENT:
+            await self.handle_inject_event(
+                command_id,
+                args.get("agent_id", 0),
+                args.get("content", ""),
+                args.get("platform")
+            )
+            return True
+
         elif command_type == CommandType.CLOSE_ENV:
             print("收到关闭环境命令")
             self.send_response(command_id, "completed", result={"message": "环境即将关闭"})
@@ -1225,31 +1293,59 @@ async def run_twitter_simulation(
     
     start_time = datetime.now()
     
+    scheduled_events = event_config.get("scheduled_events", []) or []
+
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
-        
+
         simulated_minutes = round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
-        
+
         active_agents = get_active_agents_for_round(
             result.env, config, simulated_hour, round_num
         )
-        
+
         # 无论是否有活跃agent，都记录round开始
         if action_logger:
             action_logger.log_round_start(round_num + 1, simulated_hour)
-        
+
+        # 1) 实时注入：只认领 inject_event，其余命令留给轮次结束后的等待器。
+        #    必须在轮内轮询——脚本原本只在所有轮次跑完后才看 IPC 目录，
+        #    那样"运行中注入变量"在结构上就不可能生效。
+        try:
+            injected = consume_live_injections(simulation_dir)
+            if injected:
+                fired = await fire_manual_posts(
+                    result.env, injected, agent_names, action_logger,
+                    round_num + 1, source='inject'
+                )
+                total_actions += fired
+                log_info(f"第 {round_num + 1} 轮响应了 {fired} 条实时注入")
+        except Exception as exc:
+            log_info(f"处理实时注入失败（忽略，不中断模拟）: {exc}")
+
+        # 2) 预排事件：配置里声明"在第 N 轮发生"的事件
+        due_events = events_for_round(scheduled_events, round_num)
+        if due_events:
+            fired = await fire_manual_posts(
+                result.env, due_events, agent_names, action_logger,
+                round_num + 1, source='scheduled'
+            )
+            if fired:
+                total_actions += fired
+                log_info(f"第 {round_num + 1} 轮触发了 {fired} 条预排事件")
+
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
                 action_logger.log_round_end(round_num + 1, 0)
             continue
-        
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
         
@@ -1424,31 +1520,59 @@ async def run_reddit_simulation(
     
     start_time = datetime.now()
     
+    scheduled_events = event_config.get("scheduled_events", []) or []
+
     for round_num in range(total_rounds):
         # 检查是否收到退出信号
         if _shutdown_event and _shutdown_event.is_set():
             if main_logger:
                 main_logger.info(f"收到退出信号，在第 {round_num + 1} 轮停止模拟")
             break
-        
+
         simulated_minutes = round_num * minutes_per_round
         simulated_hour = (simulated_minutes // 60) % 24
         simulated_day = simulated_minutes // (60 * 24) + 1
-        
+
         active_agents = get_active_agents_for_round(
             result.env, config, simulated_hour, round_num
         )
-        
+
         # 无论是否有活跃agent，都记录round开始
         if action_logger:
             action_logger.log_round_start(round_num + 1, simulated_hour)
-        
+
+        # 1) 实时注入：只认领 inject_event，其余命令留给轮次结束后的等待器。
+        #    必须在轮内轮询——脚本原本只在所有轮次跑完后才看 IPC 目录，
+        #    那样"运行中注入变量"在结构上就不可能生效。
+        try:
+            injected = consume_live_injections(simulation_dir)
+            if injected:
+                fired = await fire_manual_posts(
+                    result.env, injected, agent_names, action_logger,
+                    round_num + 1, source='inject'
+                )
+                total_actions += fired
+                log_info(f"第 {round_num + 1} 轮响应了 {fired} 条实时注入")
+        except Exception as exc:
+            log_info(f"处理实时注入失败（忽略，不中断模拟）: {exc}")
+
+        # 2) 预排事件：配置里声明"在第 N 轮发生"的事件
+        due_events = events_for_round(scheduled_events, round_num)
+        if due_events:
+            fired = await fire_manual_posts(
+                result.env, due_events, agent_names, action_logger,
+                round_num + 1, source='scheduled'
+            )
+            if fired:
+                total_actions += fired
+                log_info(f"第 {round_num + 1} 轮触发了 {fired} 条预排事件")
+
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
                 action_logger.log_round_end(round_num + 1, 0)
             continue
-        
+
         actions = {agent: LLMAction() for _, agent in active_agents}
         await result.env.step(actions)
         

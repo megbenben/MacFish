@@ -10,6 +10,10 @@ import uuid as uuid_mod
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from ..utils.logger import get_logger
+
+logger = get_logger('macfish.local_graph_store')
+
 
 # --- Dataclass-compatible objects mimicking zep_cloud types ---
 
@@ -127,6 +131,7 @@ class LocalGraphStore:
                 uuid_ TEXT PRIMARY KEY,
                 graph_id TEXT NOT NULL,
                 name TEXT NOT NULL DEFAULT '',
+                name_key TEXT NOT NULL DEFAULT '',
                 labels TEXT NOT NULL DEFAULT '[]',
                 summary TEXT NOT NULL DEFAULT '',
                 attributes TEXT NOT NULL DEFAULT '{}',
@@ -164,6 +169,73 @@ class LocalGraphStore:
             CREATE INDEX IF NOT EXISTS idx_episodes_graph ON episodes(graph_id);
         """)
         conn.commit()
+        self._migrate_schema(conn)
+
+    @staticmethod
+    def _name_key(name: str) -> str:
+        """节点身份归一化：去空白 + 折大小写。
+
+        与抽取器内部 name_to_uuid 的 name.lower() 约定保持一致，这样
+        「SAP」/「 sap 」在库内被视为同一个实体。
+        """
+        return (name or "").strip().lower()
+
+    def _migrate_schema(self, conn: sqlite3.Connection):
+        """把老库升级到「节点身份 = (graph_id, name_key)」。
+
+        历史库的 nodes 表没有 name_key 列，且因为每轮抽取都换新 uuid，
+        同一实体已经累积了成百上千行副本（见 docs/OPTIMIZATION.md 1.8）。
+        """
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
+        if "name_key" not in cols:
+            conn.execute("ALTER TABLE nodes ADD COLUMN name_key TEXT NOT NULL DEFAULT ''")
+            conn.execute("UPDATE nodes SET name_key = lower(trim(name)) WHERE name_key = ''")
+            conn.commit()
+
+        self._create_unique_index(
+            conn,
+            index_name="idx_nodes_graph_name_key",
+            table="nodes",
+            columns="graph_id, name_key",
+            fallback_index="idx_nodes_graph_name",
+            dup_query=("SELECT COUNT(*) FROM (SELECT graph_id, name_key FROM nodes "
+                       "GROUP BY graph_id, name_key HAVING COUNT(*) > 1)"),
+            what="nodes 表",
+        )
+        self._create_unique_index(
+            conn,
+            index_name="idx_edges_identity",
+            table="edges",
+            columns="graph_id, source_node_uuid, target_node_uuid, name, fact",
+            fallback_index="idx_edges_identity_nonunique",
+            dup_query=(
+                "SELECT COUNT(*) FROM (SELECT graph_id, source_node_uuid, "
+                "target_node_uuid, name, fact FROM edges GROUP BY 1,2,3,4,5 "
+                "HAVING COUNT(*) > 1)"
+            ),
+            what="edges 表",
+        )
+
+    @staticmethod
+    def _create_unique_index(conn, index_name, table, columns, fallback_index,
+                             dup_query, what):
+        """建立唯一索引；若历史数据已有重复则降级为普通索引并给出提示。
+
+        刻意**不**在此处删数据：自动删用户的历史数据风险太高，改为提示跑
+        `scripts/dedupe_graph.py --apply`（该脚本会先备份数据库）。
+        """
+        try:
+            conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({columns})")
+            conn.commit()
+        except sqlite3.IntegrityError:
+            dup_groups = conn.execute(dup_query).fetchone()[0]
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {fallback_index} ON {table}({columns})")
+            conn.commit()
+            logger.warning(
+                "%s 中存在 %d 组重复数据，唯一索引 %s 建不起来。新写入仍会按身份归并，"
+                "但历史重复需要运行 `uv run python scripts/dedupe_graph.py --apply` 清理。",
+                what, dup_groups, index_name,
+            )
 
     # --- Graph CRUD ---
 
@@ -232,14 +304,61 @@ class LocalGraphStore:
     # --- Node CRUD ---
 
     def upsert_node(self, node: LocalNode) -> LocalNode:
+        """按 (graph_id, name) 归并写入节点，并返回**库内规范节点**。
+
+        关键点：节点身份由 (graph_id, name) 决定，而不是调用方新生成的 uuid。
+        历史实现以 uuid_ 为主键 + INSERT OR REPLACE，导致每重建一次图谱，同一实体
+        都会以新 uuid 再插一行（实测一个实体累积了 391 个副本，见 OPTIMIZATION.md 1.8）。
+
+        返回值必须被调用方使用：若命中了已有实体，返回的是**已有 uuid**，
+        调用方应当用它去连边，否则新边会指向一个不存在的节点。
+        """
         conn = self._get_conn()
+        name_key = self._name_key(node.name)
+        existing = conn.execute(
+            "SELECT uuid_, name, labels, summary, attributes, created_at "
+            "FROM nodes WHERE graph_id=? AND name_key=?",
+            (node.graph_id, name_key)
+        ).fetchone()
+
+        if existing:
+            # 复用已有 uuid：更新为并集，保留最早的出现时间
+            merged_labels = list(existing["labels"] and json.loads(existing["labels"]) or [])
+            for label in (node.labels or []):
+                if label not in merged_labels:
+                    merged_labels.append(label)
+
+            merged_attrs = dict(existing["attributes"] and json.loads(existing["attributes"]) or {})
+            merged_attrs.update(node.attributes or {})
+
+            merged = LocalNode(
+                uuid_=existing["uuid_"],
+                name=node.name or existing["name"],
+                labels=merged_labels,
+                summary=node.summary or existing["summary"],
+                attributes=merged_attrs,
+                graph_id=node.graph_id,
+                created_at=existing["created_at"],
+            )
+            conn.execute(
+                "UPDATE nodes SET name=?, name_key=?, labels=?, summary=?, attributes=? "
+                "WHERE uuid_=?",
+                (merged.name, name_key,
+                 json.dumps(merged.labels, ensure_ascii=False),
+                 merged.summary,
+                 json.dumps(merged.attributes, ensure_ascii=False),
+                 merged.uuid_)
+            )
+            conn.commit()
+            return merged
+
         conn.execute(
-            """INSERT OR REPLACE INTO nodes (uuid_, graph_id, name, labels, summary, attributes, created_at)
-               VALUES (?,?,?,?,?,?,?)""",
-            (node.uuid_, node.graph_id, node.name,
-             json.dumps(node.labels, ensure_ascii=False),
-             node.summary,
-             json.dumps(node.attributes, ensure_ascii=False),
+            """INSERT INTO nodes (uuid_, graph_id, name, name_key, labels, summary, attributes, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (node.uuid_, node.graph_id, node.name, name_key,
+             json.dumps(node.labels or [], ensure_ascii=False),
+             node.summary or "",
+             json.dumps(node.attributes or {}, ensure_ascii=False),
              node.created_at or datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
@@ -278,9 +397,39 @@ class LocalGraphStore:
     # --- Edge CRUD ---
 
     def upsert_edge(self, edge: LocalEdge) -> LocalEdge:
+        """按 (graph_id, source, target, name, fact) 归并写入边。
+
+        与节点同理：重建图谱时同一关系会带着新 uuid 再来一次，若不做归并，
+        边也会无限累积（只是因为在旧实现里边各自指向不同的 node uuid，
+        表面上看起来不像重复而已）。
+
+        归并条件里带上 `fact` 是刻意的保守选择：只有事实描述完全一致的边才合并，
+        带时间窗（valid_at/invalid_at）的不同事实不会被误并成一条。
+        """
         conn = self._get_conn()
+        existing = conn.execute(
+            "SELECT uuid_, episodes FROM edges WHERE graph_id=? AND source_node_uuid=? "
+            "AND target_node_uuid=? AND name=? AND fact=?",
+            (edge.graph_id, edge.source_node_uuid, edge.target_node_uuid,
+             edge.name, edge.fact)
+        ).fetchone()
+
+        if existing:
+            merged_episodes = list(existing["episodes"] and json.loads(existing["episodes"]) or [])
+            for ep in (getattr(edge, 'episodes', []) or []):
+                if ep not in merged_episodes:
+                    merged_episodes.append(ep)
+            conn.execute(
+                "UPDATE edges SET episodes=? WHERE uuid_=?",
+                (json.dumps(merged_episodes, ensure_ascii=False), existing["uuid_"])
+            )
+            conn.commit()
+            # 复用已有 uuid，调用方拿到的就是库内规范边
+            edge.uuid_ = existing["uuid_"]
+            return edge
+
         conn.execute(
-            """INSERT OR REPLACE INTO edges
+            """INSERT INTO edges
                (uuid_, graph_id, name, fact, source_node_uuid, target_node_uuid,
                 attributes, created_at, valid_at, invalid_at, expired_at, episodes)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",

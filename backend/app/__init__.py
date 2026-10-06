@@ -40,7 +40,20 @@ def create_app(config_class=Config):
         logger.info("=" * 50)
     
     # 启用CORS
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # 默认只放行本机前端（Vite dev server :3000）。这是一个无鉴权的本地应用，
+    # 允许任意来源等于把 LLM 额度和上传材料暴露给同网段的任何人。
+    # 需要自定义时用 CORS_ORIGINS 覆盖（逗号分隔；设为 * 可恢复旧的放开行为）。
+    cors_env = os.environ.get('CORS_ORIGINS', '')
+    if cors_env.strip() == '*':
+        cors_origins = '*'
+    elif cors_env.strip():
+        cors_origins = [o.strip() for o in cors_env.split(',') if o.strip()]
+    else:
+        cors_origins = [
+            'http://localhost:3000',
+            'http://127.0.0.1:3000',
+        ]
+    CORS(app, resources={r"/api/*": {"origins": cors_origins}})
     
     # 注册模拟进程清理函数（确保服务器关闭时终止所有模拟进程）
     from .services.simulation_runner import SimulationRunner
@@ -63,11 +76,12 @@ def create_app(config_class=Config):
         return response
     
     # 注册蓝图
-    from .api import graph_bp, simulation_bp, report_bp, settings_bp
+    from .api import graph_bp, simulation_bp, report_bp, settings_bp, benchmark_bp
     app.register_blueprint(graph_bp, url_prefix='/api/graph')
     app.register_blueprint(simulation_bp, url_prefix='/api/simulation')
     app.register_blueprint(report_bp, url_prefix='/api/report')
     app.register_blueprint(settings_bp, url_prefix='/api/settings')
+    app.register_blueprint(benchmark_bp, url_prefix='/api/benchmark')
     
     # 健康检查
     @app.route('/health')

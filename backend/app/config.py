@@ -40,13 +40,24 @@ class Config:
     # 当前激活的 LLM 供应源: "network" 或 "local"
     LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'network')
     
-    # Zep配置
+    # 历史遗留：知识图谱早已本地化为 SQLite（LocalGraphClient 根本不使用 api_key），
+    # 这个键不再参与任何功能。保留属性只为兼容仍写 `api_key or Config.ZEP_API_KEY`
+    # 的旧调用点，取值为 None 完全正常，也不再参与 validate()。
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
     
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
-    ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
+    # 能真正解析的扩展名（不带点，对照 allowed_file() 的用法）
+    ALLOWED_EXTENSIONS = {
+        'pdf', 'md', 'markdown', 'txt', 'csv',
+        'docx', 'pptx', 'xlsx', 'xlsm',
+        'png', 'jpg', 'jpeg', 'heic', 'heif',
+        'tiff', 'tif', 'bmp', 'webp', 'gif',
+    }
+    # 旧版 Office 二进制格式：单独列出，只为了给出「请另存为 .docx/.pptx/.xlsx」
+    # 的提示。刻意不放进 ALLOWED_EXTENSIONS —— 否则它们会被存盘然后以库报错收场。
+    LEGACY_EXTENSIONS = {'doc', 'ppt', 'xls'}
     
     # 文本处理配置
     DEFAULT_CHUNK_SIZE = 500  # 默认切块大小
@@ -78,7 +89,5 @@ class Config:
         # 只在云端 provider 模式下检查 LLM_API_KEY
         if cls.LLM_PROVIDER == 'network' and not cls.LLM_API_KEY:
             errors.append("LLM_API_KEY 未配置（云端模式）：请在 .env 中配置 LLM_API_KEY")
-        if not cls.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY 未配置")
         return errors
 

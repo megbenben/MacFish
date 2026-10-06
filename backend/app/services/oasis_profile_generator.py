@@ -205,16 +205,17 @@ class OasisProfileGenerator:
             model=self.model_name
         )
         
-        # Zep客户端用于检索丰富上下文
+        # 本地图谱客户端，用于检索丰富上下文。
+        # 注意：它不依赖任何 API key，因此无条件初始化——否则一旦 ZEP_API_KEY
+        # 没配置，检索会静默降级成"没有图谱上下文"。
         self.zep_api_key = zep_api_key or Config.ZEP_API_KEY
         self.zep_client = None
         self.graph_id = graph_id
-        
-        if self.zep_api_key:
-            try:
-                self.zep_client = LocalGraphClient(api_key=self.zep_api_key)
-            except Exception as e:
-                logger.warning(f"Zep客户端初始化失败: {e}")
+
+        try:
+            self.zep_client = LocalGraphClient(api_key=self.zep_api_key or '')
+        except Exception as e:
+            logger.warning(f"本地图谱客户端初始化失败: {e}")
     
     def generate_profile_from_entity(
         self, 

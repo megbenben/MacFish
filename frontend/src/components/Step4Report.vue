@@ -63,6 +63,35 @@
               </div>
             </div>
           </div>
+
+          <!-- Scenario Tree（大纲级产物，不属于任何章节） -->
+          <div v-if="reportOutline.scenarios && reportOutline.scenarios.length" class="scenario-block">
+            <div class="scenario-block-head">
+              <h2 class="scenario-block-title">{{ $t('report.scenarioSection') }}</h2>
+              <p class="scenario-block-hint">{{ $t('report.scenarioSectionHint') }}</p>
+            </div>
+            <div class="scenario-list">
+              <div v-for="(scenario, sidx) in reportOutline.scenarios" :key="sidx" class="scenario-card">
+                <div class="scenario-card-head">
+                  <span class="scenario-name">{{ scenario.name }}</span>
+                  <span v-if="scenario.relative_likelihood" class="scenario-likelihood">
+                    {{ $t('report.scenarioLikelihood') }}: {{ scenario.relative_likelihood }}
+                  </span>
+                </div>
+                <p v-if="scenario.description" class="scenario-desc">{{ scenario.description }}</p>
+                <div v-if="scenario.trigger_conditions && scenario.trigger_conditions.length" class="scenario-triggers">
+                  <span class="scenario-sub-label">{{ $t('report.scenarioTriggers') }}</span>
+                  <ul>
+                    <li v-for="(condition, cidx) in scenario.trigger_conditions" :key="cidx">{{ condition }}</li>
+                  </ul>
+                </div>
+                <div v-if="scenario.key_actors && scenario.key_actors.length" class="scenario-actors">
+                  <span class="scenario-sub-label">{{ $t('report.scenarioActors') }}</span>
+                  <span v-for="(actor, aidx) in scenario.key_actors" :key="aidx" class="scenario-actor">{{ actor }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Waiting State -->
@@ -5158,5 +5187,116 @@ watch(() => props.reportId, (newId) => {
 /* English locale: smaller report title */
 html[lang="en"] .report-header-block .main-title {
   font-size: 28px;
+}
+</style>
+
+<style scoped>
+/* ── 情景树 ──
+   刻意做成卡片而非长文：情景是决策者要横向比较的对象，并排卡片比并列段落更容易扫读。 */
+.scenario-block {
+  margin-top: 48px;
+  padding-top: 32px;
+  border-top: 1px solid #E5E7EB;
+}
+
+.scenario-block-title {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 24px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 8px 0;
+}
+
+.scenario-block-hint {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #6B7280;
+  margin: 0 0 24px 0;
+}
+
+.scenario-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.scenario-card {
+  background: #FAFAFA;
+  border: 1px solid #E5E7EB;
+  border-left: 3px solid #1F2937;
+  border-radius: 4px;
+  padding: 18px 20px;
+}
+
+.scenario-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.scenario-name {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.scenario-likelihood {
+  font-size: 12px;
+  color: #6B7280;
+  white-space: nowrap;
+}
+
+.scenario-desc {
+  font-size: 14px;
+  line-height: 1.75;
+  color: #374151;
+  margin: 0 0 12px 0;
+}
+
+.scenario-sub-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9CA3AF;
+  margin-bottom: 6px;
+}
+
+.scenario-triggers ul {
+  margin: 0 0 12px 0;
+  padding-left: 18px;
+}
+
+.scenario-triggers li {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #374151;
+  margin-bottom: 3px;
+}
+
+.scenario-actors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.scenario-actors .scenario-sub-label {
+  margin-bottom: 0;
+  margin-right: 2px;
+}
+
+.scenario-actor {
+  font-size: 12px;
+  color: #374151;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 3px;
+  padding: 2px 8px;
 }
 </style>

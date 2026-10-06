@@ -1,0 +1,17 @@
+{
+  "cases": [
+    {
+      "case_id": "synthetic_ev_price_war_001",
+      "enabled": true,
+      "synthetic": true,
+      "title": "合成演示：某细分市场是否会继续降价（30 天）"
+    },
+    {
+      "case_id": "synthetic_recall_crisis_002",
+      "enabled": true,
+      "synthetic": true,
+      "title": "合成演示：某消费品召回事件的舆情走向（14 天）"
+    }
+  ],
+  "schema_version": 1
+}
