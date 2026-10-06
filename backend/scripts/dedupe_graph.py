@@ -41,6 +41,21 @@ def name_key(name: str) -> str:
     return (name or "").strip().lower()
 
 
+def ensure_schema_migrated(db_path: str):
+    """复用应用自己的迁移，补上 name_key 列（并尝试建唯一索引）。
+
+    脚本用的是自己的 sqlite3 连接，不会顺带触发 `LocalGraphStore.__init__` 里的迁移。
+    直接 import 类也不够——只有**实例化**才会跑 `_init_db` / `_migrate_schema`。
+    这里调用同一个类，保证脚本与后端的 schema 演进永远一致。
+    """
+    backend = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from app.services.local_graph_store import LocalGraphStore
+
+    LocalGraphStore(db_path)
+
+
 def _merge_json_list(a, b):
     out = []
     for raw in (a, b):
@@ -189,6 +204,8 @@ def main():
         backup = f"{args.db}.bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         shutil.copy2(args.db, backup)
         print(f"已备份数据库 -> {backup}\n")
+        # 只用 --apply 时迁移 schema：演练应当保持纯只读
+        ensure_schema_migrated(args.db)
     else:
         print("演练模式（不写入）。加 --apply 才会真正合并。\n")
 
