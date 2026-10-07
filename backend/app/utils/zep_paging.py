@@ -16,6 +16,9 @@ logger = get_logger('mirofish.zep_paging')
 
 _DEFAULT_PAGE_SIZE = 100
 _MAX_NODES = 2000
+#: 公开别名：调用方需要判断「是不是撞上了上限」（以前只有一行 WARNING 日志，
+#: 界面上完全看不出来实体其实被截断了）
+MAX_NODES = _MAX_NODES
 #: 边的上限：一张图通常边远多于节点，所以给得比节点宽，但不能没有——
 #: 全景检索（panorama_search）会把整张图的边拉进内存，没有上限就可能吃满内存。
 _MAX_EDGES = 4000

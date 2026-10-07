@@ -13,6 +13,8 @@ import os
 import json
 import time
 import re
+import logging
+import threading
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -304,6 +306,27 @@ class ReportLogger:
         )
 
 
+class _OwningThreadFilter(logging.Filter):
+    """只放行「创建本 handler 的那个线程」产生的日志记录。
+
+    `mirofish.report_agent` / `mirofish.zep_tools` 是模块级共享 logger，而
+    ReportConsoleLogger 会给每一份报告往这两个 logger 上各挂一个指向**自己**目录的
+    handler。logger 会把一条记录派发给它所有 handler，于是两份报告并发时
+    （先点一份、再换一个 simulation 点另一份），A 的 console_log.txt 里会混进 B 的
+    日志行——而那个文件存在的唯一理由就是排查「这份报告为什么失败」。
+
+    报告生成是「一份报告一个线程」（api/report.py 里 run_generate 起一个线程，
+    全程无线程池），所以按线程归属过滤就够了，且不需要改动任何 logger.xxx() 调用点。
+    """
+
+    def __init__(self, thread_ident: int):
+        super().__init__()
+        self.thread_ident = thread_ident
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread == self.thread_ident
+
+
 class ReportConsoleLogger:
     """
     Report Agent 控制台日志记录器
@@ -334,8 +357,6 @@ class ReportConsoleLogger:
     
     def _setup_file_handler(self):
         """设置文件处理器，将日志同时写入文件"""
-        import logging
-        
         # 创建文件处理器
         self._file_handler = logging.FileHandler(
             self.log_file_path,
@@ -343,20 +364,23 @@ class ReportConsoleLogger:
             encoding='utf-8'
         )
         self._file_handler.setLevel(logging.INFO)
-        
+
+        # 关键：只接收本报告所在线程的日志，否则并发报告会互相写进对方的文件
+        self._file_handler.addFilter(_OwningThreadFilter(threading.get_ident()))
+
         # 使用与控制台相同的简洁格式
         formatter = logging.Formatter(
             '[%(asctime)s] %(levelname)s: %(message)s',
             datefmt='%H:%M:%S'
         )
         self._file_handler.setFormatter(formatter)
-        
+
         # 添加到 report_agent 相关的 logger
         loggers_to_attach = [
             'mirofish.report_agent',
             'mirofish.zep_tools',
         ]
-        
+
         for logger_name in loggers_to_attach:
             target_logger = logging.getLogger(logger_name)
             # 避免重复添加
@@ -365,8 +389,6 @@ class ReportConsoleLogger:
     
     def close(self):
         """关闭文件处理器并从 logger 中移除"""
-        import logging
-        
         if self._file_handler:
             loggers_to_detach = [
                 'mirofish.report_agent',

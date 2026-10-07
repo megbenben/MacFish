@@ -58,6 +58,11 @@ service.interceptors.response.use(
       const data = error.response.data
       const msg = data.error || data.message || error.message
       const fullError = new Error(msg)
+      // 保留原始响应：调用方需要按状态码分支处理（例如 409 的“需要确认”里
+      // 带着 node_count / referenced_simulations），只留一句 message 是不够的
+      fullError.response = error.response
+      fullError.status = error.response.status
+      fullError.data = data
       if (data.traceback) {
         fullError.traceback = data.traceback
         console.error('Backend traceback:', data.traceback)

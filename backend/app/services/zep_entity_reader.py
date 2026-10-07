@@ -11,7 +11,7 @@ from ..utils.local_graph_client import LocalGraphClient
 
 from ..config import Config
 from ..utils.logger import get_logger
-from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges, MAX_NODES
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -58,13 +58,17 @@ class FilteredEntities:
     entity_types: Set[str]
     total_count: int
     filtered_count: int
-    
+    #: 节点读取是否撞上了 fetch_all_nodes 的上限（撞上意味着图谱其实更大，
+    #: 后续人设生成只覆盖了被读到的那部分）
+    truncated: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "entities": [e.to_dict() for e in self.entities],
             "entity_types": list(self.entity_types),
             "total_count": self.total_count,
             "filtered_count": self.filtered_count,
+            "truncated": self.truncated,
         }
 
 
@@ -321,11 +325,20 @@ class ZepEntityReader:
         logger.info(f"筛选完成: 总节点 {total_count}, 符合条件 {len(filtered_entities)}, "
                    f"实体类型: {entity_types_found}")
         
+        # 撞上上限时明确标记出来：图谱其实更大，后续只会为被读到的这部分生成人设
+        truncated = total_count >= MAX_NODES
+        if truncated:
+            logger.warning(
+                f"图谱 {graph_id} 的节点数已达读取上限 {MAX_NODES}，实际图谱更大；"
+                f"本次只覆盖前 {total_count} 个节点"
+            )
+
         return FilteredEntities(
             entities=filtered_entities,
             entity_types=entity_types_found,
             total_count=total_count,
             filtered_count=len(filtered_entities),
+            truncated=truncated,
         )
     
     def get_entity_with_context(

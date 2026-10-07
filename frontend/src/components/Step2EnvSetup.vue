@@ -77,6 +77,29 @@
             </div>
           </div>
 
+          <!-- 实体数撞上图谱读取上限：实际图谱更大，只有被读到的这部分会变成 Agent -->
+          <div v-if="entitiesTruncated" class="truncated-banner">
+            {{ $t('step2.entitiesTruncatedBanner') }}
+          </div>
+
+          <!-- 人设阶段的成本护栏：先给数字再开跑 -->
+          <div v-if="budgetHold" class="budget-hold">
+            <div class="budget-hold-text">
+              {{ $t('step2.prepareBudgetHold', {
+                estimated: budgetHold.estimated_calls,
+                limit: budgetHold.limit
+              }) }}
+            </div>
+            <div class="budget-hold-actions">
+              <button class="budget-hold-btn" @click="cancelOverBudget">
+                {{ $t('step2.budgetCancelBtn') }}
+              </button>
+              <button class="budget-hold-btn danger" @click="confirmOverBudget">
+                {{ $t('step2.budgetConfirmBtn') }}
+              </button>
+            </div>
+          </div>
+
           <!-- Profiles List Preview -->
           <div v-if="profiles.length > 0" class="profiles-preview">
             <div class="preview-header">
@@ -662,6 +685,9 @@ const progressMessage = ref('')
 const profiles = ref([])
 const entityTypes = ref([])
 const expectedTotal = ref(null)
+const entitiesTruncated = ref(false)
+// 人设阶段超出预算时，后端返回的预估明细（等用户确认）
+const budgetHold = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
 const showProfilesDetail = ref(true)
@@ -769,25 +795,29 @@ const selectProfile = (profile) => {
 }
 
 // 自动开始准备模拟
-const startPrepareSimulation = async () => {
+const startPrepareSimulation = async (allowOverBudget = false) => {
   if (!props.simulationId) {
     addLog(t('log.errorMissingSimId'))
     emit('update-status', 'error')
     return
   }
-  
+
   // 标记第一步完成，开始第二步
   phase.value = 1
   addLog(t('log.simInstanceCreated', { id: props.simulationId }))
   addLog(t('log.preparingSimEnv'))
   emit('update-status', 'processing')
-  
+
   try {
-    const res = await prepareSimulation({
+    const payload = {
       simulation_id: props.simulationId,
       use_llm_for_profiles: true,
       parallel_profile_count: 5
-    })
+    }
+    // 只在用户已经看过预估、明确要继续时才带这个标记
+    if (allowOverBudget) payload.allow_over_budget = true
+
+    const res = await prepareSimulation(payload)
     
     if (res.success && res.data) {
       if (res.data.already_prepared) {
@@ -807,6 +837,12 @@ const startPrepareSimulation = async () => {
         if (res.data.entity_types && res.data.entity_types.length > 0) {
           addLog(t('log.entityTypes', { types: res.data.entity_types.join(', ') }))
         }
+        // 撞上图谱读取上限时，界面上要看得见——以前只有后端一行 WARNING 日志，
+        // 用户不知道自己是拿一部分实体在跑模拟
+        entitiesTruncated.value = !!res.data.entities_truncated
+        if (entitiesTruncated.value) {
+          addLog(t('log.entitiesTruncated', { count: res.data.expected_entities_count }))
+        }
       }
       
       addLog(t('log.startPollingProgress'))
@@ -819,9 +855,31 @@ const startPrepareSimulation = async () => {
       emit('update-status', 'error')
     }
   } catch (err) {
+    // 人设阶段的成本护栏：后端拦下了超预算的一次准备，先把预估数字摆出来再让用户定
+    if (err.status === 400 && err.data?.need_confirm) {
+      budgetHold.value = err.data
+      addLog(t('log.prepareBudgetHold', {
+        estimated: err.data.estimated_calls,
+        limit: err.data.limit
+      }))
+      emit('update-status', 'warning')
+      return
+    }
     addLog(t('log.prepareException', { error: err.message }))
     emit('update-status', 'error')
   }
+}
+
+const confirmOverBudget = () => {
+  budgetHold.value = null
+  addLog(t('log.prepareBudgetConfirmed'))
+  startPrepareSimulation(true)
+}
+
+const cancelOverBudget = () => {
+  budgetHold.value = null
+  emit('update-status', 'idle')
+  addLog(t('log.prepareBudgetCancelled'))
 }
 
 const startPolling = () => {
@@ -1301,6 +1359,62 @@ onUnmounted(() => {
 }
 
 /* Profiles Preview */
+.budget-hold {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: #FDF3F2;
+  border-left: 3px solid #B23A2F;
+  border-radius: 2px;
+}
+
+.budget-hold-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #B23A2F;
+}
+
+.budget-hold-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.budget-hold-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1F2937;
+  background: #F3F4F6;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.budget-hold-btn:hover {
+  background: #E5E7EB;
+}
+
+.budget-hold-btn.danger {
+  color: #FFFFFF;
+  background: #B23A2F;
+}
+
+.budget-hold-btn.danger:hover {
+  background: #8E2E25;
+}
+
+.truncated-banner {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8A5A00;
+  background: #FFF8E6;
+  border-left: 3px solid #D9A400;
+  border-radius: 2px;
+}
+
 .profiles-preview {
   margin-top: 20px;
   border-top: 1px solid #E5E5E5;

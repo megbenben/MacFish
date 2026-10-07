@@ -4,6 +4,7 @@
 """
 
 import os
+import json
 import traceback
 import threading
 from flask import request, jsonify
@@ -12,6 +13,7 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.local_graph_store import LocalGraphStore
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser, ExtractionError
 from ..utils.logger import get_logger
@@ -293,6 +295,32 @@ def generate_ontology():
         }), 500
 
 
+def _count_graph_references(graph_id: str) -> int:
+    """统计有多少个模拟仍然指向这张图谱。
+
+    删掉图谱会让这些模拟的「图谱记忆更新」失去落点（报告里存的 graph_id 也会悬空），
+    所以重建前要把这个数字告诉用户，而不是默默删掉。
+    """
+    if not graph_id:
+        return 0
+    sim_root = Config.OASIS_SIMULATION_DATA_DIR
+    if not os.path.isdir(sim_root):
+        return 0
+
+    count = 0
+    for entry in os.listdir(sim_root):
+        state_file = os.path.join(sim_root, entry, 'state.json')
+        if not os.path.exists(state_file):
+            continue
+        try:
+            with open(state_file, 'r', encoding='utf-8') as f:
+                if json.load(f).get('graph_id') == graph_id:
+                    count += 1
+        except Exception:
+            continue
+    return count
+
+
 # ============== 接口2：构建图谱 ==============
 
 @graph_bp.route('/build', methods=['POST'])
@@ -368,14 +396,46 @@ def build_graph():
                 "error": t('api.graphBuilding'),
                 "task_id": project.graph_build_task_id
             }), 400
-        
-        # 如果强制重建，重置状态
+
+        # 图谱已经建过一次、而且确实有节点时，「重建」意味着要回答一个产品问题：
+        # 旧图谱是继续累积，还是丢掉重建？
+        # 以前 force 只是把 project.graph_id 置空 —— 旧图谱的 nodes/edges/episodes
+        # 永远留在 graphs.db 里，无人引用也无人清理（每重建一次多一份）。
+        # 现在不传 force 就先返回 409 + 现有规模，让前端问一声，再由用户决定。
+        existing_graph_id = project.graph_id
+        existing_node_count = 0
+        if existing_graph_id:
+            try:
+                existing_node_count = LocalGraphStore.get_instance().get_node_count(existing_graph_id)
+            except Exception as e:
+                logger.warning(f"读取现有图谱节点数失败（按 0 处理）: {existing_graph_id}, error={e}")
+
+        if existing_graph_id and existing_node_count > 0 and not force:
+            ref_count = _count_graph_references(existing_graph_id)
+            return jsonify({
+                "success": False,
+                "error": t('api.graphRebuildConfirm', count=existing_node_count, refs=ref_count),
+                "data": {
+                    "need_confirm": True,
+                    "graph_id": existing_graph_id,
+                    "node_count": existing_node_count,
+                    "referenced_simulations": ref_count,
+                },
+            }), 409
+
+        # 强制重建：重置状态，并**真正删掉**旧图谱，避免孤儿数据一直堆在 graphs.db 里
         if force and project.status in [ProjectStatus.GRAPH_BUILDING, ProjectStatus.FAILED, ProjectStatus.GRAPH_COMPLETED]:
+            if existing_graph_id:
+                try:
+                    GraphBuilderService(api_key=Config.ZEP_API_KEY).delete_graph(existing_graph_id)
+                    logger.info(f"强制重建：已删除旧图谱 {existing_graph_id}（{existing_node_count} 个节点）")
+                except Exception as e:
+                    logger.warning(f"删除旧图谱失败，继续重建（旧数据可能残留）: {existing_graph_id}, error={e}")
             project.status = ProjectStatus.ONTOLOGY_GENERATED
             project.graph_id = None
             project.graph_build_task_id = None
             project.error = None
-        
+
         # 获取配置
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
         chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)

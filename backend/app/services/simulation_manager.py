@@ -58,6 +58,8 @@ class SimulationState:
     entities_count: int = 0
     profiles_count: int = 0
     entity_types: List[str] = field(default_factory=list)
+    #: 实体数是否撞上了图谱读取上限（撞上说明实际图谱更大，模拟只覆盖了一部分）
+    entities_truncated: bool = False
     
     # 配置生成信息
     config_generated: bool = False
@@ -87,6 +89,7 @@ class SimulationState:
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "entities_truncated": self.entities_truncated,
             "config_generated": self.config_generated,
             "config_reasoning": self.config_reasoning,
             "current_round": self.current_round,
@@ -107,6 +110,7 @@ class SimulationState:
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "entities_truncated": self.entities_truncated,
             "config_generated": self.config_generated,
             "error": self.error,
         }
@@ -178,6 +182,7 @@ class SimulationManager:
             entities_count=data.get("entities_count", 0),
             profiles_count=data.get("profiles_count", 0),
             entity_types=data.get("entity_types", []),
+            entities_truncated=data.get("entities_truncated", False),
             config_generated=data.get("config_generated", False),
             config_reasoning=data.get("config_reasoning", ""),
             current_round=data.get("current_round", 0),

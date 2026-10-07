@@ -223,6 +223,46 @@ def create_simulation():
         }), 500
 
 
+def _prepare_budget_guard(entity_count: int, budget_max: int,
+                          allow_over_budget: bool) -> tuple:
+    """人设生成阶段的成本护栏（纯函数，便于单测）。
+
+    人设阶段的调用量是「每个实体一次」+「配置生成的固定几批」，规模一大就是
+    一笔真金白银（2000 个实体 = 2000 次调用）。这里只做判定，不产生任何副作用。
+
+    Args:
+        entity_count: 即将生成人设的实体数
+        budget_max: 设置里的调用次数上限，<= 0 表示不限
+        allow_over_budget: 调用方是否已明确表示「超了也继续」
+
+    Returns:
+        (allowed, detail)
+        - allowed=True 时 detail 为 None
+        - allowed=False 时 detail 是给前端的预估明细（含 need_confirm）
+    """
+    if budget_max <= 0 or entity_count <= 0 or allow_over_budget:
+        return True, None
+
+    try:
+        estimate = cost_estimator.estimate_calls(entity_count=entity_count)
+    except Exception as exc:  # 预估失败不该拦住正常流程
+        logger.warning(f"人设阶段成本预估失败，跳过护栏: {exc}")
+        return True, None
+
+    stages = estimate['stages']
+    prepare_calls = stages['profiles'] + stages['config']
+    if prepare_calls <= budget_max:
+        return True, None
+
+    return False, {
+        "stage": "profiles",
+        "estimated_calls": prepare_calls,
+        "limit": budget_max,
+        "entity_count": entity_count,
+        "need_confirm": True,
+    }
+
+
 def _check_simulation_prepared(simulation_id: str) -> tuple:
     """
     检查模拟是否已经准备完成
@@ -399,7 +439,8 @@ def prepare_simulation():
             "entity_types": ["Student", "PublicFigure"],  // 可选，指定实体类型
             "use_llm_for_profiles": true,                 // 可选，是否用LLM生成人设
             "parallel_profile_count": 5,                  // 可选，并行生成人设数量，默认5
-            "force_regenerate": false                     // 可选，强制重新生成，默认false
+            "force_regenerate": false,                    // 可选，强制重新生成，默认false
+            "allow_over_budget": false                    // 可选，已知人设阶段会超出预算仍要继续
         }
     
     返回：
@@ -499,11 +540,37 @@ def prepare_simulation():
             # 保存实体数量到状态（供前端立即获取）
             state.entities_count = filtered_preview.filtered_count
             state.entity_types = list(filtered_preview.entity_types)
-            logger.info(f"预期实体数量: {filtered_preview.filtered_count}, 类型: {filtered_preview.entity_types}")
+            state.entities_truncated = bool(getattr(filtered_preview, 'truncated', False))
+            logger.info(f"预期实体数量: {filtered_preview.filtered_count}, "
+                        f"类型: {filtered_preview.entity_types}, 撞上限: {state.entities_truncated}")
         except Exception as e:
             logger.warning(f"同步获取实体数量失败（将在后台任务中重试）: {e}")
             # 失败不影响后续流程，后台任务会重新获取
-        
+
+        # ========== 成本护栏：人设生成 ==========
+        # 人设阶段就是「每个实体一次 LLM 调用」（外加配置生成的几批），2000 个实体
+        # 等于 2000 次调用，而这一步在 /prepare 里直接开跑，此前没有任何事前提示。
+        # 口径与 /start 的护栏一致：超过预算就先拦下，由调用方显式放行。
+        budget = runtime_settings.get_budget_config()
+        allowed, guard_detail = _prepare_budget_guard(
+            entity_count=state.entities_count,
+            budget_max=int(budget.get('max_calls') or 0),
+            allow_over_budget=bool(data.get('allow_over_budget', False)),
+        )
+        if not allowed:
+            logger.warning(
+                f"人设阶段预估 {guard_detail['estimated_calls']} 次调用，"
+                f"超过预算上限 {guard_detail['limit']}，已拦下 "
+                f"(simulation_id={simulation_id}, entities={state.entities_count})"
+            )
+            return jsonify({
+                "success": False,
+                "error": t('api.prepareBudgetExceeded',
+                           estimated=guard_detail['estimated_calls'],
+                           limit=guard_detail['limit']),
+                "data": guard_detail,
+            }), 400
+
         # 创建异步任务
         task_manager = TaskManager()
         task_id = task_manager.create_task(
@@ -637,7 +704,9 @@ def prepare_simulation():
                 "message": t('api.prepareStarted'),
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # 预期的Agent总数
-                "entity_types": state.entity_types  # 实体类型列表
+                "entity_types": state.entity_types,  # 实体类型列表
+                # 实体数撞上图谱读取上限：实际图谱更大，模拟只覆盖了被读到的这部分
+                "entities_truncated": state.entities_truncated
             }
         })
         

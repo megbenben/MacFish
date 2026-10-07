@@ -71,6 +71,27 @@
       </div>
     </main>
 
+    <!-- 已有图谱时重建前必须确认：这一步会删掉旧图谱，还会断开引用它的模拟 -->
+    <div v-if="pendingRebuild" class="rebuild-overlay">
+      <div class="rebuild-dialog">
+        <div class="rebuild-title">{{ $t('step1.rebuildTitle') }}</div>
+        <div class="rebuild-body">
+          <p>{{ $t('step1.rebuildNodeCount', { count: pendingRebuild.node_count }) }}</p>
+          <p v-if="pendingRebuild.referenced_simulations > 0" class="rebuild-warn">
+            {{ $t('step1.rebuildRefs', { refs: pendingRebuild.referenced_simulations }) }}
+          </p>
+        </div>
+        <div class="rebuild-actions">
+          <button class="rebuild-btn" :disabled="false" @click="cancelRebuild">
+            {{ $t('step1.rebuildCancel') }}
+          </button>
+          <button class="rebuild-btn danger" @click="confirmRebuild">
+            {{ $t('step1.rebuildConfirm') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <SettingsPanel :visible="showSettings" @close="showSettings = false" />
   </div>
 </template>
@@ -262,14 +283,18 @@ const updatePhaseByStatus = (status) => {
   }
 }
 
-const startBuildGraph = async () => {
+// 已有图谱时的「累积 or 重建」确认（后端会返回 409 + 现有规模）
+const pendingRebuild = ref(null)
+
+const startBuildGraph = async (force = false) => {
   try {
     currentPhase.value = 1
     buildProgress.value = { progress: 0, message: 'Starting build...' }
     addLog('Initiating graph build...')
-    
-    const res = await buildGraph({ project_id: currentProjectId.value })
+
+    const res = await buildGraph({ project_id: currentProjectId.value, force })
     if (res.success) {
+      pendingRebuild.value = null
       addLog(`Graph build task started. Task ID: ${res.data.task_id}`)
       startGraphPolling()
       startPollingTask(res.data.task_id)
@@ -278,9 +303,28 @@ const startBuildGraph = async () => {
       addLog(`Error starting build: ${res.error}`)
     }
   } catch (err) {
+    // 409 = 后端要求确认「从头重建」。这一步会**删掉旧图谱**（还会断开引用它的模拟），
+    // 所以不能默默继续，先把规模摆出来让用户拍板。
+    if (err.status === 409 && err.data?.need_confirm) {
+      pendingRebuild.value = err.data
+      currentPhase.value = -2
+      addLog(err.message)
+      return
+    }
     error.value = err.message
     addLog(`Exception in startBuildGraph: ${err.message}`)
   }
+}
+
+const confirmRebuild = () => {
+  addLog(t('log.rebuildConfirmed'))
+  startBuildGraph(true)
+}
+
+const cancelRebuild = () => {
+  pendingRebuild.value = null
+  currentPhase.value = 2
+  addLog(t('log.rebuildCancelled'))
 }
 
 const startGraphPolling = () => {
@@ -552,5 +596,76 @@ onUnmounted(() => {
 
 .panel-wrapper.left {
   border-right: 1px solid #EAEAEA;
+}
+
+/* 重建确认对话框 */
+.rebuild-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.rebuild-dialog {
+  width: min(440px, calc(100vw - 48px));
+  padding: 20px 22px;
+  background: #FFFFFF;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.rebuild-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1F2937;
+  margin-bottom: 10px;
+}
+
+.rebuild-body {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #4B5563;
+}
+
+.rebuild-body p {
+  margin: 0 0 6px;
+}
+
+.rebuild-warn {
+  color: #B23A2F;
+}
+
+.rebuild-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.rebuild-btn {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1F2937;
+  background: #F3F4F6;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.rebuild-btn:hover {
+  background: #E5E7EB;
+}
+
+.rebuild-btn.danger {
+  color: #FFFFFF;
+  background: #B23A2F;
+}
+
+.rebuild-btn.danger:hover {
+  background: #8E2E25;
 }
 </style>
