@@ -54,6 +54,32 @@
 `uv run python scripts/run_benchmark.py verify` **39/39**；
 `uv run python scripts/test_multi_format.py` **11/11**；`npm run build` 通过。
 
+### 0.1 同一天的第二轮：原「下轮待办」7 项也做完了
+
+| 编号 | 问题 | 状态 |
+|---|---|---|
+| A4 | `TaskManager` 重启后 task_id 全失效，图谱任务查询无补偿 | ✅ 已修（落盘 `uploads/tasks/` + 按 `project.graph_build_task_id` 反推兜底） |
+| A5 | 人设生成阶段没有成本护栏（2000 实体 = 2000 次调用直接开跑） | ✅ 已修（`_prepare_budget_guard` + 前端确认） |
+| A7 | 构建前没有「累积 or 重建」询问 + 2000 上限界面不可见 | ✅ 已修（409 + 确认弹窗 + 实体截断提示条） |
+| A7 附带 | `force` 重建只把 `graph_id` 置空，旧图谱成为永久孤儿数据 | ✅ 已修（确认后真的删除，删除前报出引用它的模拟数） |
+| A11 | 两份 `renderMarkdown` + 无转义 | ✅ 已修（合并到 `src/utils/markdown.js` 并加转义；`frontend/scripts/check-markdown.mjs` 18/18） |
+| A12 | 上传无进度、无大小校验、无去重 | ✅ 已修 |
+| B7 | 报告日志挂在全局 logger 上，并发报告互相污染 | ✅ 已修（按线程归属过滤；测试做过变异校验） |
+| F3 | `GraphPanel` 每次数据变化整图重建，缩放/选中丢失 | ✅ 已修（复用坐标 + 接回缩放 + 补回选中 + 去掉多余的 deep watch） |
+
+转义那处有个值得一提的坑：一开始把 `>` 也转义了，结果所有 `> 引用` 变成字面量文本——
+`>` 是引用块的语法前缀。现在只转 `&` 和 `<`（先 `&` 后 `<`，否则实体编码能绕过），
+`>` 保持原样。这一条已经写进 `check-markdown.mjs` 当回归用例。
+
+第二轮结束时：测试 **92 passed**、benchmark **39/39**、多格式 **11/11**、
+`node frontend/scripts/check-markdown.mjs` **18/18**、`npm run build` 通过。
+
+### 附录：仍未做的
+
+D1（SSE 取代 8 处轮询）、D2（抽取 `batch_size` 与截断对齐——需要先跑小样本对比抽取质量）、
+D3（上传解析异步化）、D4（拆 `Step4Report.vue`）、D5（长任务占满后端导致 HTTP 不响应的根因诊断）、
+D6（`defusedxml` 加固，本地单用户场景收益极低）、4.3（同 D6）。
+
 
 ---
 
