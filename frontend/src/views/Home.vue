@@ -165,6 +165,10 @@
                   </div>
                 </div>
               </div>
+
+              <!-- 不支持的文件 / 体积超限 / 重复文件。以前这些文案只写进 error，
+                   模板里没有任何地方读它，等于「仍然静默丢弃」 -->
+              <div v-if="error" class="upload-warning">{{ error }}</div>
             </div>
 
             <!-- 分割线 -->
@@ -263,6 +267,9 @@ const triggerFileInput = () => {
 // 处理文件选择
 const handleFileSelect = (event) => {
   const selectedFiles = Array.from(event.target.files)
+  // 立刻清空 value：<input type=file> 在两次选中同一路径时 value 不变、change 不再触发，
+  // 表现就是「移除某个文件后再选它，什么也没发生」
+  event.target.value = ''
   addFiles(selectedFiles)
 }
 
@@ -700,6 +707,18 @@ const startSimulation = () => {
 
 .console-section {
   padding: 20px;
+}
+
+.upload-warning {
+  margin-top: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #B23A2F;
+  background: #FDF3F2;
+  border-left: 3px solid #B23A2F;
+  border-radius: 2px;
+  word-break: break-word;
 }
 
 .console-section.btn-section {

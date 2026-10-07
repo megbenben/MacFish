@@ -9,14 +9,6 @@ export const generateReport = (data) => {
 }
 
 /**
- * 获取报告生成状态
- * @param {string} reportId
- */
-export const getReportStatus = (reportId) => {
-  return service.get(`/api/report/generate/status`, { params: { report_id: reportId } })
-}
-
-/**
  * 获取 Agent 日志（增量）
  * @param {string} reportId
  * @param {number} fromLine - 从第几行开始获取

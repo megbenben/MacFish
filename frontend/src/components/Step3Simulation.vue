@@ -131,7 +131,29 @@
       </div>
 
       <div class="action-controls">
-        <button 
+        <!-- 失败/停滞的明确提示 + 出路。以前这两种状态既不写提示也不停轮询，
+             页面就永远停在「运行中」，用户看不出发生了什么 -->
+        <div v-if="startError" class="start-error">{{ startError }}</div>
+        <button
+          v-if="phase === 3"
+          class="action-btn warn"
+          :disabled="isStarting"
+          @click="handleForceRestart"
+        >
+          <span v-if="isStarting" class="loading-spinner-small"></span>
+          {{ $t('step3.forceRestartBtn') }}
+        </button>
+        <!-- 超出预算：不再自动开跑，交回用户拍板 -->
+        <button
+          v-if="phase === 4"
+          class="action-btn warn"
+          :disabled="isStarting"
+          @click="handleConfirmBudget"
+        >
+          <span v-if="isStarting" class="loading-spinner-small"></span>
+          {{ $t('step3.startAnywayBtn') }}
+        </button>
+        <button
           class="action-btn primary"
           :disabled="phase !== 2 || isGeneratingReport"
           @click="handleNextStep"
@@ -412,7 +434,7 @@ const router = useRouter()
 
 // State
 const isGeneratingReport = ref(false)
-const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
+const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成, 3: 失败/停滞, 4: 待确认（超出预算）
 const isStarting = ref(false)
 const isStopping = ref(false)
 const startError = ref(null)
@@ -475,7 +497,10 @@ const resetAllState = () => {
 }
 
 // 启动模拟
-const doStartSimulation = async () => {
+// force 只应在用户明确确认时传：后端里它同时意味着「绕过预算护栏」「停掉正在跑的进程」
+// 「清空上一轮的 actions.jsonl / simulation.log」。此前这里写死 force: true，等于每次
+// 进入 Step 3 都会静默清掉上一轮日志，并把预算护栏整个绕过去。
+const doStartSimulation = async ({ force = false } = {}) => {
   if (!props.simulationId) {
     addLog(t('log.errorMissingSimId'))
     return
@@ -483,20 +508,24 @@ const doStartSimulation = async () => {
 
   // 先重置所有状态，确保不会受到上一次模拟的影响
   resetAllState()
-  
+
   isStarting.value = true
   startError.value = null
   addLog(t('log.startingDualSim'))
   emit('update-status', 'processing')
-  
+
   try {
     const params = {
       simulation_id: props.simulationId,
       platform: 'parallel',
-      force: true,  // 强制重新开始
       enable_graph_memory_update: true  // 开启动态图谱更新
     }
-    
+
+    if (force) {
+      params.force = true
+      addLog(t('log.forceRestart'))
+    }
+
     if (props.maxRounds) {
       params.max_rounds = props.maxRounds
       addLog(t('log.setMaxRounds', { rounds: props.maxRounds }))
@@ -520,16 +549,29 @@ const doStartSimulation = async () => {
       startDetailPolling()
     } else {
       startError.value = res.error || '启动失败'
+      phase.value = 3
       addLog(t('log.startFailed', { error: res.error || t('common.unknownError') }))
       emit('update-status', 'error')
     }
   } catch (err) {
     startError.value = err.message
+    phase.value = 3
     addLog(t('log.startException', { error: err.message }))
     emit('update-status', 'error')
   } finally {
     isStarting.value = false
   }
+}
+
+// 失败/停滞后的出路：强制重新开始（会清掉上一轮日志，所以日志里先说清楚）
+const handleForceRestart = () => {
+  addLog(t('log.forceRestart'))
+  doStartSimulation({ force: true })
+}
+
+// 超出预算时由用户拍板
+const handleConfirmBudget = () => {
+  doStartSimulation({ force: true })
 }
 
 // 停止模拟
@@ -606,13 +648,13 @@ const fetchRunStatus = async () => {
         prevRedditRound.value = data.reddit_current_round
       }
       
-      // 检测模拟是否已完成（通过 runner_status 或平台完成状态判断）
+      // 检测模拟是否已结束（通过 runner_status 或平台完成状态判断）
       const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped'
-      
+
       // 额外检查：如果后端还没来得及更新 runner_status，但平台已经报告完成
       // 通过检测 twitter_completed 和 reddit_completed 状态判断
       const platformsCompleted = checkPlatformsCompleted(data)
-      
+
       if (isCompleted || platformsCompleted) {
         if (platformsCompleted && !isCompleted) {
           addLog(t('log.allPlatformsCompleted'))
@@ -621,6 +663,18 @@ const fetchRunStatus = async () => {
         phase.value = 2
         stopPolling()
         emit('update-status', 'completed')
+        return
+      }
+
+      // 失败 / 停滞同样要收敛，否则页面永远停在「运行中」，轮询也永远不会停
+      if (data.runner_status === 'failed' || data.runner_status === 'stalled') {
+        const isStalled = data.runner_status === 'stalled'
+        const detail = data.error || t('common.unknownError')
+        addLog(t(isStalled ? 'log.simStalled' : 'log.simFailed', { error: detail }))
+        startError.value = detail
+        phase.value = 3
+        stopPolling()
+        emit('update-status', 'error')
       }
     }
   } catch (err) {
@@ -782,12 +836,21 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
+onMounted(async () => {
   addLog(t('log.step3Init'))
-  fetchCostEstimate()
-  if (props.simulationId) {
-    doStartSimulation()
+  // 先等预估结果：此前两者并发发出，用户看到红色超额数字时钱已经在花了
+  await fetchCostEstimate()
+
+  if (!props.simulationId) return
+
+  if (costEstimate.value && costEstimate.value.budget_exceeded) {
+    phase.value = 4
+    addLog(t('log.budgetExceededHold', { total: costEstimate.value.remaining_total }))
+    emit('update-status', 'warning')
+    return
   }
+
+  doStartSimulation()
 })
 
 onUnmounted(() => {
@@ -995,6 +1058,32 @@ onUnmounted(() => {
 .action-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+
+.action-btn.warn {
+  background: #B23A2F;
+  color: #FFF;
+}
+
+.action-btn.warn:hover:not(:disabled) {
+  background: #8E2E25;
+}
+
+.action-controls .action-btn + .action-btn {
+  margin-left: 8px;
+}
+
+.start-error {
+  display: block;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #B23A2F;
+  background: #FDF3F2;
+  border-left: 3px solid #B23A2F;
+  border-radius: 2px;
+  word-break: break-word;
 }
 
 /* --- Main Content Area --- */

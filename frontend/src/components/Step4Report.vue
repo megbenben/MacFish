@@ -156,6 +156,18 @@
             </div>
           </div>
 
+          <!-- 生成失败：明确提示 + 出路。此前失败后页面会永远停在「生成中」 -->
+          <div v-if="isFailed" class="report-error">
+            <div class="report-error-text">{{ reportError }}</div>
+            <button
+              class="report-error-btn"
+              :disabled="regenerating || !simulationId"
+              @click="handleRegenerate"
+            >
+              {{ regenerating ? $t('step4.regeneratingBtn') : $t('step4.regenerateBtn') }}
+            </button>
+          </div>
+
           <!-- Next Step Button - 在完成后显示 -->
           <button v-if="isComplete" class="next-step-btn" @click="goToInteraction">
             <span>{{ $t('step4.goToInteraction') }}</span>
@@ -422,7 +434,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, generateReport } from '../api/report'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -442,6 +454,30 @@ const goToInteraction = () => {
   }
 }
 
+// 报告生成失败后的出路：带 force_regenerate 让后端重跑一遍，
+// 新报告是新的 report_id，直接导航过去
+const handleRegenerate = async () => {
+  if (!props.simulationId || regenerating.value) return
+  regenerating.value = true
+  try {
+    reportError.value = null
+    const res = await generateReport({
+      simulation_id: props.simulationId,
+      force_regenerate: true
+    })
+    if (res.success && res.data?.report_id) {
+      isFailed.value = false
+      router.push({ name: 'Report', params: { reportId: res.data.report_id } })
+    } else {
+      reportError.value = res.error || t('common.unknownError')
+    }
+  } catch (err) {
+    reportError.value = err.message
+  } finally {
+    regenerating.value = false
+  }
+}
+
 // State
 const agentLogs = ref([])
 const consoleLogs = ref([])
@@ -454,6 +490,9 @@ const expandedContent = ref(new Set())
 const expandedLogs = ref(new Set())
 const collapsedSections = ref(new Set())
 const isComplete = ref(false)
+const isFailed = ref(false)
+const reportError = ref(null)
+const regenerating = ref(false)
 const startTime = ref(null)
 const leftPanel = ref(null)
 const rightPanel = ref(null)
@@ -2088,6 +2127,17 @@ const fetchAgentLog = async () => {
             stopPolling()
             // 滚动逻辑统一在循环结束后的 nextTick 中处理
           }
+
+          // 后端失败时会写一条 action="error" 的日志。此前只认 report_complete，
+          // 于是失败后轮询永不停止、页面永远停在「生成中」，用户只能靠肉眼找红字。
+          if (log.action === 'error') {
+            reportError.value = log.details?.error || log.details?.message || t('common.unknownError')
+            isFailed.value = true
+            currentSectionIndex.value = null
+            addLog(t('log.reportFailed', { error: reportError.value }))
+            emit('update-status', 'error')
+            stopPolling()
+          }
           
           if (log.action === 'report_start') {
             startTime.value = new Date(log.timestamp)
@@ -3451,6 +3501,45 @@ watch(() => props.reportId, (newId) => {
 
 .next-step-btn:hover {
   background: #374151;
+}
+
+.report-error {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 20px 4px 20px;
+  padding: 12px 14px;
+  background: #FDF3F2;
+  border-left: 3px solid #B23A2F;
+  border-radius: 4px;
+}
+
+.report-error-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #B23A2F;
+  word-break: break-word;
+}
+
+.report-error-btn {
+  align-self: flex-start;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #FFFFFF;
+  background: #B23A2F;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.report-error-btn:hover:not(:disabled) {
+  background: #8E2E25;
+}
+
+.report-error-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .next-step-btn svg {

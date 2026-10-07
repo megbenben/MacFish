@@ -178,8 +178,26 @@ const handleNextStep = (params = {}) => {
 // --- Data Logic ---
 
 /**
+ * 只提示、不动作：确认模拟是否在跑，在跑就写一条日志告知用户。
+ * 用于「不是从 Step 3 返回」的入口（首页历史卡片、Step 1），
+ * 这些情况下用户只是想看环境配置，不该动他的模拟。
+ */
+const warnIfSimulationRunning = async () => {
+  if (!currentSimulationId.value) return
+  try {
+    const envStatusRes = await getEnvStatus({ simulation_id: currentSimulationId.value })
+    if (envStatusRes.success && envStatusRes.data?.env_alive) {
+      addLog(t('log.simRunningNotStopped'))
+    }
+  } catch (err) {
+    // 探测失败不打扰用户
+    console.warn('检查模拟运行状态失败:', err)
+  }
+}
+
+/**
  * 检查并关闭正在运行的模拟
- * 当用户从 Step 3 返回到 Step 2 时，默认用户要退出模拟
+ * 仅当用户是从 Step 3 返回（fromRun=1）时调用
  */
 const checkAndStopRunningSimulation = async () => {
   if (!currentSimulationId.value) return
@@ -293,10 +311,16 @@ const refreshGraph = () => {
 
 onMounted(async () => {
   addLog(t('log.simViewInit'))
-  
-  // 检查并关闭正在运行的模拟（用户从 Step 3 返回时）
-  await checkAndStopRunningSimulation()
-  
+
+  // 只有「从 Step 3 返回」时才默认退出正在运行的模拟（那个入口带 fromRun=1）。
+  // 从首页历史卡片、Step 1 进来时用户只是想看看环境配置，以前那种一进来就静默
+  // 停掉模拟的行为，会白白终结一次已经跑了很久的推演。
+  if (route.query.fromRun === '1') {
+    await checkAndStopRunningSimulation()
+  } else {
+    await warnIfSimulationRunning()
+  }
+
   // 加载模拟数据
   loadSimulationData()
 })

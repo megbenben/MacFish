@@ -194,7 +194,13 @@ const handleGoBack = async () => {
   }
   
   // 返回到 Step 2 (环境搭建)
-  router.push({ name: 'Simulation', params: { simulationId: currentSimulationId.value } })
+  // fromRun=1 是本页专属标记：Step 2 只有看到它才会默认退出正在运行的模拟，
+  // 从首页历史卡片等入口进去时不会（那些入口用户只是想看看环境）
+  router.push({
+    name: 'Simulation',
+    params: { simulationId: currentSimulationId.value },
+    query: { fromRun: '1' }
+  })
 }
 
 const handleNextStep = () => {

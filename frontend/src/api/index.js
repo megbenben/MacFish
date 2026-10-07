@@ -2,8 +2,11 @@ import axios from 'axios'
 import i18n from '../i18n'
 
 // 创建axios实例
+// 默认走相对路径：dev 由 vite.config.js 的 server.proxy['/api'] 转发到 :5001。
+// 写死绝对地址会让那份代理成为死配置，每个请求都跨域带一次预检，而且把可用性绑死在
+// 「后端正好在本机 5001」上。需要跨源访问时用 VITE_API_BASE_URL 显式指定。
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001',
+  baseURL: import.meta.env.VITE_API_BASE_URL || '',
   timeout: 300000, // 5分钟超时（本体生成可能需要较长时间）
   headers: {
     'Content-Type': 'application/json'

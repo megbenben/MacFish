@@ -449,7 +449,9 @@ const { t } = useI18n()
 
 const props = defineProps({
   reportId: String,
-  simulationId: String
+  simulationId: String,
+  // 父组件 InteractionView 一直在传它；以前没声明，于是被当成透传属性落到根元素上
+  systemLogs: Array
 })
 
 const emit = defineEmits(['add-log', 'update-status'])
@@ -966,10 +968,10 @@ const handleClickOutside = (e) => {
 }
 
 // Lifecycle
+// 数据的首次加载交给下面两个 immediate watch（它们在 setup 期就同步跑一次），
+// onMounted 里不再重复加载 —— 之前两边都调，进页面会各发两遍报告与全量 agent-log。
 onMounted(() => {
   addLog(t('log.step5Init'))
-  loadReportData()
-  loadProfiles()
   document.addEventListener('click', handleClickOutside)
 })
 
@@ -977,14 +979,19 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
 })
 
+const currentReportId = ref(null)
+const currentSimulationId = ref(null)
+
 watch(() => props.reportId, (newId) => {
-  if (newId) {
+  if (newId && newId !== currentReportId.value) {
+    currentReportId.value = newId
     loadReportData()
   }
 }, { immediate: true })
 
 watch(() => props.simulationId, (newId) => {
-  if (newId) {
+  if (newId && newId !== currentSimulationId.value) {
+    currentSimulationId.value = newId
     loadProfiles()
   }
 }, { immediate: true })

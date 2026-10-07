@@ -53,26 +53,20 @@
 
       <!-- Right Panel: Step Components -->
       <div class="panel-wrapper right" :style="rightPanelStyle">
-        <!-- Step 1: 图谱构建 -->
-        <Step1GraphBuild 
-          v-if="currentStep === 1"
+        <!-- 本页只负责 Step 1（图谱构建）。
+             Step 2 起是独立路由：/simulation/:id（SimulationView 等），
+             Step1GraphBuild 完成后直接 router.push 过去。
+             这里原先还留着一套 v-if/v-else-if 的 Step 切换接线，但它其实是死路径：
+             Step1 从不 emit next-step，currentStep 也就永远停在 1，Step2 那一支从未被渲染；
+             而一旦有人把 Step1 改成 emit，走到 currentStep>=3 会得到一个空白面板。
+             与其留个陷阱，不如删掉。 -->
+        <Step1GraphBuild
           :currentPhase="currentPhase"
           :projectData="projectData"
           :ontologyProgress="ontologyProgress"
           :buildProgress="buildProgress"
           :graphData="graphData"
           :systemLogs="systemLogs"
-          @next-step="handleNextStep"
-        />
-        <!-- Step 2: 环境搭建 -->
-        <Step2EnvSetup
-          v-else-if="currentStep === 2"
-          :projectData="projectData"
-          :graphData="graphData"
-          :systemLogs="systemLogs"
-          @go-back="handleGoBack"
-          @next-step="handleNextStep"
-          @add-log="addLog"
         />
       </div>
     </main>
@@ -87,7 +81,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
-import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
@@ -95,15 +88,14 @@ import SettingsPanel from '../components/SettingsPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
-const { t, tm } = useI18n()
+const { t } = useI18n()
 
 // Layout State
 const showSettings = ref(false)
 const viewMode = ref('split') // graph | split | workbench
 
-// Step State
-const currentStep = ref(1) // 1: 图谱构建, 2: 环境搭建, 3: 开始模拟, 4: 报告生成, 5: 深度互动
-const stepNames = computed(() => tm('main.stepNames'))
+// 本页固定是流程的第 1 步（图谱构建），其余步骤都是独立路由
+const currentStep = ref(1)
 
 // Data State
 const currentProjectId = ref(route.params.projectId)
@@ -165,25 +157,6 @@ const toggleMaximize = (target) => {
     viewMode.value = 'split'
   } else {
     viewMode.value = target
-  }
-}
-
-const handleNextStep = (params = {}) => {
-  if (currentStep.value < 5) {
-    currentStep.value++
-    addLog(t('log.enterStep', { step: currentStep.value, name: stepNames.value[currentStep.value - 1] }))
-    
-    // 如果是从 Step 2 进入 Step 3，记录模拟轮数配置
-    if (currentStep.value === 3 && params.maxRounds) {
-      addLog(t('log.customSimRounds', { rounds: params.maxRounds }))
-    }
-  }
-}
-
-const handleGoBack = () => {
-  if (currentStep.value > 1) {
-    currentStep.value--
-    addLog(t('log.returnToStep', { step: currentStep.value, name: stepNames.value[currentStep.value - 1] }))
   }
 }
 
