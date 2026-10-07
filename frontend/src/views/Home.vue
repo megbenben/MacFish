@@ -294,18 +294,45 @@ const handleDrop = (e) => {
 
 // 添加文件
 const addFiles = (newFiles) => {
-  const accepted = newFiles.filter(file => {
+  const accepted = []
+  const unsupported = []
+  const duplicated = []
+  const tooLarge = []
+
+  // 与后端 Config.MAX_CONTENT_LENGTH 对齐：那是整个 multipart 请求的上限，
+  // 超了后端返回 413，而前端此前完全不校验，用户只看到一句笼统的错误
+  const MAX_TOTAL_BYTES = 50 * 1024 * 1024
+  let totalBytes = files.value.reduce((sum, f) => sum + f.size, 0)
+
+  for (const file of newFiles) {
     const ext = (file.name.split('.').pop() || '').toLowerCase()
-    return ACCEPTED_EXTENSIONS.includes('.' + ext)
-  })
-  // 被拒的文件不再静默丢弃，明确告诉用户为什么
-  const rejected = newFiles.filter(file => !accepted.includes(file))
-  if (rejected.length) {
-    const names = rejected.map(f => f.name).join('、')
-    error.value = `${t('home.unsupportedFile')}${names}`
-  } else {
-    error.value = ''
+    if (!ACCEPTED_EXTENSIONS.includes('.' + ext)) {
+      unsupported.push(file.name)
+      continue
+    }
+    // 同名同大小视为同一个文件（这是浏览器能给出的最强判据）
+    const isDuplicate =
+      files.value.some(f => f.name === file.name && f.size === file.size) ||
+      accepted.some(f => f.name === file.name && f.size === file.size)
+    if (isDuplicate) {
+      duplicated.push(file.name)
+      continue
+    }
+    if (totalBytes + file.size > MAX_TOTAL_BYTES) {
+      tooLarge.push(file.name)
+      continue
+    }
+    accepted.push(file)
+    totalBytes += file.size
   }
+
+  // 被拒的文件不再静默丢弃，逐条说明原因
+  const messages = []
+  if (unsupported.length) messages.push(`${t('home.unsupportedFile')}${unsupported.join('、')}`)
+  if (duplicated.length) messages.push(`${t('home.duplicateFile')}${duplicated.join('、')}`)
+  if (tooLarge.length) messages.push(`${t('home.fileTooLarge')}${tooLarge.join('、')}`)
+  error.value = messages.join('　')
+
   files.value.push(...accepted)
 }
 

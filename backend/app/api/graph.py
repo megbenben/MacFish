@@ -7,6 +7,7 @@ import os
 import json
 import traceback
 import threading
+from typing import Any, Dict, Optional
 from flask import request, jsonify
 
 from . import graph_bp
@@ -652,19 +653,74 @@ def build_graph():
 
 # ============== 任务查询接口 ==============
 
+def _infer_graph_task(task_id: str) -> Optional[Dict[str, Any]]:
+    """任务表里查不到时，按 project.graph_build_task_id 反推图谱任务的状态。
+
+    任务本身会落盘（uploads/tasks/），但历史任务会被清理、文件也可能被手动删掉。
+    图谱构建任务 ID 同时记在项目上，据此推断可以避免前端在「构建期间重启过」之后
+    一直转圈——这正是 OPTIMIZATION.md 1.5 里那条「只有图谱任务没有补偿」。
+    """
+    try:
+        projects = ProjectManager.list_projects(limit=200)
+    except Exception as e:
+        logger.warning(f"推断图谱任务状态失败: {e}")
+        return None
+
+    for project in projects:
+        if project.graph_build_task_id != task_id:
+            continue
+
+        if project.status == ProjectStatus.GRAPH_COMPLETED and project.graph_id:
+            status, progress = "completed", 100
+            message, error = t('progress.taskComplete'), None
+        elif project.status == ProjectStatus.FAILED or project.error:
+            status, progress = "failed", 0
+            message, error = t('progress.taskFailed'), project.error
+        else:
+            # 任务记录都不在了，却还写着「构建中」——说明构建它的那个进程已经没了
+            status, progress = "failed", 0
+            message = t('api.graphBuildLost')
+            error = message
+
+        return {
+            "task_id": task_id,
+            "task_type": f"构建图谱: {project.name or project.project_id}",
+            "status": status,
+            "progress": progress,
+            "message": message,
+            "progress_detail": {},
+            "result": {
+                "project_id": project.project_id,
+                "graph_id": project.graph_id,
+            } if status == "completed" else None,
+            "error": error,
+            "metadata": {"project_id": project.project_id},
+            # 标记这不是任务表里的原记录，而是推断出来的
+            "inferred": True,
+        }
+
+    return None
+
+
 @graph_bp.route('/task/<task_id>', methods=['GET'])
 def get_task(task_id: str):
     """
     查询任务状态
     """
     task = TaskManager().get_task(task_id)
-    
+
     if not task:
+        inferred = _infer_graph_task(task_id)
+        if inferred:
+            return jsonify({
+                "success": True,
+                "data": inferred
+            })
         return jsonify({
             "success": False,
             "error": t('api.taskNotFound', id=task_id)
         }), 404
-    
+
     return jsonify({
         "success": True,
         "data": task.to_dict()

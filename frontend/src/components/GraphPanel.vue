@@ -325,11 +325,23 @@ let currentSimulation = null
 let linkLabelsRef = null
 let linkLabelBgRef = null
 
+// 渲染之间要留住的两样东西。
+// 图谱在运行期间每 10~30 秒被整体替换一次（SimulationRunView / MainView 的定时刷新），
+// 而 props.graphData 一变就整图重建：SVG 全清、力导向从头收敛、缩放/平移/选中全丢。
+// 用户看到的是「图每隔一会儿跳一下再重新摊开」，盯着的实体位置也保不住。
+let lastZoomTransform = null
+const nodePositionCache = new Map()  // uuid -> { x, y }
+
 const renderGraph = () => {
   if (!graphSvg.value || !props.graphData) return
   
-  // 停止之前的仿真
+  // 停止之前的仿真，并把这一轮布局的最终坐标记下来供下次渲染复用
   if (currentSimulation) {
+    for (const d of currentSimulation.nodes()) {
+      if (Number.isFinite(d.x) && Number.isFinite(d.y)) {
+        nodePositionCache.set(d.id, { x: d.x, y: d.y })
+      }
+    }
     currentSimulation.stop()
   }
   
@@ -353,12 +365,27 @@ const renderGraph = () => {
   const nodeMap = {}
   nodesData.forEach(n => nodeMap[n.uuid] = n)
   
-  const nodes = nodesData.map(n => ({
-    id: n.uuid,
-    name: n.name || 'Unnamed',
-    type: n.labels?.find(l => l !== 'Entity') || 'Entity',
-    rawData: n
-  }))
+  const nodes = nodesData.map(n => {
+    const node = {
+      id: n.uuid,
+      name: n.name || 'Unnamed',
+      type: n.labels?.find(l => l !== 'Entity') || 'Entity',
+      rawData: n
+    }
+    // 复用上一次布局算出的坐标：新节点从原位出发，力导向只需微调，
+    // 而不是把整张图重新摊开一遍
+    const cached = nodePositionCache.get(n.uuid)
+    if (cached) {
+      node.x = cached.x
+      node.y = cached.y
+    }
+    return node
+  })
+  // 扔掉已经被删掉的节点的坐标，避免缓存无限增长
+  const liveIds = new Set(nodes.map(n => n.id))
+  for (const uuid of nodePositionCache.keys()) {
+    if (!liveIds.has(uuid)) nodePositionCache.delete(uuid)
+  }
   
   const nodeIds = new Set(nodes.map(n => n.id))
   
@@ -487,11 +514,20 @@ const renderGraph = () => {
   currentSimulation = simulation
 
   const g = svg.append('g')
-  
-  // Zoom
-  svg.call(d3.zoom().extent([[0, 0], [width, height]]).scaleExtent([0.1, 4]).on('zoom', (event) => {
-    g.attr('transform', event.transform)
-  }))
+
+  // Zoom。重建后要把上一次的缩放/平移原样接回去，否则用户放大看某个实体，
+  // 下一次定时刷新就把他弹回全图。
+  const zoomBehavior = d3.zoom()
+    .extent([[0, 0], [width, height]])
+    .scaleExtent([0.1, 4])
+    .on('zoom', (event) => {
+      lastZoomTransform = event.transform
+      g.attr('transform', event.transform)
+    })
+  svg.call(zoomBehavior)
+  if (lastZoomTransform) {
+    svg.call(zoomBehavior.transform, lastZoomTransform)
+  }
 
   // Links - 使用 path 支持曲线
   const linkGroup = g.append('g').attr('class', 'links')
@@ -773,6 +809,23 @@ const renderGraph = () => {
       .attr('y', d => d.y)
   })
   
+  // 重建后把当前选中项的高亮补回来（整图重建会把 d3 直接改过的样式一起清掉，
+  // 详情面板还开着、图上却没有高亮，看起来像坏了）
+  function applySelectionHighlight() {
+    const selected = selectedItem.value
+    if (!selected) return
+
+    if (selected.type === 'node') {
+      const uuid = selected.data?.uuid
+      if (!uuid) return
+      node.filter(d => d.id === uuid).attr('stroke', '#E91E63').attr('stroke-width', 4)
+      link.filter(l => l.source.id === uuid || l.target.id === uuid)
+        .attr('stroke', '#E91E63')
+        .attr('stroke-width', 2.5)
+    }
+  }
+  applySelectionHighlight()
+
   // 点击空白处关闭详情面板
   svg.on('click', () => {
     selectedItem.value = null
@@ -785,7 +838,9 @@ const renderGraph = () => {
 
 watch(() => props.graphData, () => {
   nextTick(renderGraph)
-}, { deep: true })
+})
+// 注意这里没有 deep: true：graphData 每次都是整体替换（`graphData.value = res.data`），
+// 引用比较就够了。deep 会对上千个节点/边做一次深度遍历，纯属白花。
 
 // 监听边标签显示开关
 watch(showEdgeLabels, (newVal) => {

@@ -2,18 +2,27 @@ import service, { requestWithRetry } from './index'
 
 /**
  * 生成本体（上传文档和模拟需求）
- * @param {Object} data - 包含files, simulation_requirement, project_name等
+ * @param {Object} formData - 包含files, simulation_requirement, project_name等
+ * @param {Function} [onProgress] - 上传进度回调，收到 0~100 的百分比
  * @returns {Promise}
  */
-export function generateOntology(formData) {
-  return requestWithRetry(() => 
+export function generateOntology(formData, onProgress) {
+  return requestWithRetry(() =>
     service({
       url: '/api/graph/ontology/generate',
       method: 'post',
       data: formData,
       headers: {
         'Content-Type': 'multipart/form-data'
-      }
+      },
+      // 上传几十 MB 材料时界面此前只有一个转圈，用户不知道是卡住了还是在传
+      onUploadProgress: onProgress
+        ? (event) => {
+            if (event.total) {
+              onProgress(Math.round((event.loaded * 100) / event.total))
+            }
+          }
+        : undefined
     })
   )
 }

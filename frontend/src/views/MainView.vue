@@ -209,8 +209,26 @@ const handleNewProject = async () => {
     const formData = new FormData()
     pending.files.forEach(f => formData.append('files', f))
     formData.append('simulation_requirement', pending.simulationRequirement)
-    
-    const res = await generateOntology(formData)
+
+    // 上传阶段单独给进度：大材料传输本身就可能占掉几十秒，
+    // 此前这段时间界面只有一个转圈，分不清是在传还是在卡
+    let lastLoggedPercent = -1
+    const onUploadProgress = (event) => {
+      if (!event.total) return
+      const percent = Math.round((event.loaded * 100) / event.total)
+      // 解析（含 OCR）发生在上传完成之后，所以 100% 只是「传完了」
+      ontologyProgress.value = {
+        message: percent >= 100
+          ? 'Upload complete, analyzing docs...'
+          : `Uploading docs... ${percent}%`
+      }
+      if (percent >= 100 || percent - lastLoggedPercent >= 20) {
+        lastLoggedPercent = percent
+        addLog(`Upload progress: ${percent}%`)
+      }
+    }
+
+    const res = await generateOntology(formData, onUploadProgress)
     if (res.success) {
       clearPendingUpload()
       currentProjectId.value = res.data.project_id
