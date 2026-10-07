@@ -5,8 +5,6 @@
 简洁通用的群体智能引擎，预测万物 —— 可直接使用 DeepSeek API 运行
 </br>
 <em>A Simple and Universal Swarm Intelligence Engine, Predicting Anything</em>
-</br>
-<sub>Forked from <a href="https://github.com/666ghj/MiroFish">MiroFish</a></sub>
 
 [English](./README.md) | [中文文档](./README-ZH.md)
 
@@ -14,20 +12,17 @@
 
 ---
 
-## 🔧 这个 fork 改了什么
-
-本 fork 把整条流水线重写为**直连单一 LLM 供应商 + 本地存储**，并修掉了一批通过审计原代码发现的
-正确性问题。下面每一条都在本地用离线测试套件验证过（不消耗任何 LLM 调用）。
+## ✨ 这个 fork 带来了什么
 
 ### 一、直连 DeepSeek API —— 不再依赖 Zep Cloud 与外部图数据库
 
-知识图谱原本依赖 Zep Cloud，意味着第二个供应商、第二个 API Key，并且那个 Key 一旦缺失就
+知识图谱原本依赖 Zep Cloud：第二个供应商、第二个 API Key，而且那个 Key 一旦缺失就
 **直接起不来**。现在完全本地化：
 
 - 抽取由 **DeepSeek**（`deepseek-chat`）通过标准 OpenAI 兼容接口完成
 - 图谱存储是**本地 SQLite 文件**（`backend/uploads/graphs.db`）
-- **不再需要 `ZEP_API_KEY`**，它也已从启动校验里移除
-- 任何 OpenAI 兼容的接口都可以，改 `LLM_BASE_URL` / `LLM_MODEL_NAME` 即可
+- **不再需要 `ZEP_API_KEY`**，它也已从启动校验中移除
+- 任何 OpenAI 兼容接口都能换，改 `LLM_BASE_URL` / `LLM_MODEL_NAME` 即可
 
 ### 二、多格式文档摄入
 
@@ -39,39 +34,56 @@
 | 文本 | `.txt`、`.md`、`.markdown`、`.csv` |
 | 图片 | `.png`、`.jpg`、`.jpeg`、`.heic`、`.heif`、`.tiff`、`.tif`、`.bmp`、`.webp`、`.gif`（走 OCR） |
 
-- OCR 使用 **macOS 本地 Vision 框架**，免费、离线、无需密钥（`uv sync --extra ocr-macos`）
-- 也可以改用视觉大模型接口
+- OCR 使用 **macOS 本地 Vision 框架**，免费、离线、无需密钥（`uv sync --extra ocr-macos`），
+  也可以改用视觉大模型接口
 - 旧版 Office 二进制格式（`.doc` / `.ppt` / `.xls`）会被明确拒绝并提示「另存为 .docx/.pptx/.xlsx」，
   而不是静默失败
 - 每个文件的解析结果都会回报，一个坏文件不再拖垮整批上传
 
-### 三、代码审计带来的工程修复
+### 三、开发亮点
 
-| 方面 | 改了什么 |
+这个 fork 从头到尾做过一轮审计，并围绕「可验证的行为」重建，而不是「看起来能跑」：
+
+| 亮点 | 说明 |
 |---|---|
-| 图谱重复累积 | 节点身份从「每次抽取生成新 `uuid4()`」改为 `(graph_id, name)`。反复重建会把每个实体重新插入一遍——实测有个库**9336 行节点实际只有 960 个不同名字**。附迁移脚本 `scripts/dedupe_graph.py` |
-| 模拟生命周期 | 卡住的模拟不再永远停在 "running"；后端重启遗留的孤儿子进程会被识别并回收；主动停止不再被误报成失败 |
-| 成本护栏 | 人设生成与模拟启动前都会给出预估调用次数，超出设置的预算上限时先拦下 |
-| 任务持久化 | 长任务跨后端重启存活，不再让界面永远转圈 |
-| 安全默认值 | 后端默认只绑 `127.0.0.1`，CORS 只放行本地开发源 |
-| 测试 | `pytest` 从 **0 个测试变成 92 个**，另有离线回测框架（39 项检查）、多格式摄入检查（11 例）、前端 Markdown 检查（18 例） |
+| **图谱去重** | 节点身份从「每次抽取生成新 `uuid4()`」改为 `(graph_id, name)`。反复重建会把每个实体重新插入一遍——实测有个库**9336 行节点实际只有 960 个不同名字**（光 `SAP` 就有 440 份副本）。附迁移脚本 `scripts/dedupe_graph.py` 修复历史库，重建也不再累积 |
+| **可离线验证** | `pytest` 从 **0 个测试变成 92 个**，另有回测框架（桩驱动、39 项检查）、多格式摄入检查（11 例）、前端 Markdown 检查（18 例）。全部**不需要联网，也不消耗任何 LLM 调用** |
+| **成本护栏** | 人设生成与模拟启动前都会先预估 LLM 调用次数，超出设置的预算上限时停下来等确认，而不是默默发出成千上万次调用 |
+| **可复现的运行** | 每份报告都带 run manifest（提交号、输入、模型），报告内含情景树而不只是单一叙述 |
+| **健壮的模拟生命周期** | 卡住的模拟会被检测出来，不再永远停在 "running"；后端重启遗留的孤儿子进程会在启动时回收；主动停止不再被误报成失败 |
+| **抗重启的任务跟踪** | 长任务落盘保存，跨后端重启存活，界面不会永远转圈 |
+| **安全默认值** | 后端默认只绑 `127.0.0.1`，CORS 只放行本地开发源 |
+| **输入处理加固** | 上传的切块参数会被校验（退化的 `chunk_overlap` 曾能把后台线程送进无界循环）；报告正文渲染前会做 HTML 转义 |
 
-## ⚡ 概述
+## 🏗 运行逻辑
 
-**MacFish** 是一个多智能体预测引擎。它从现实世界提取种子信息（突发新闻、政策草案、金融信号，
-或任意文档），构建出一个平行数字世界：大量拥有独立人设与记忆的智能体在模拟社交平台上自由互动。
-你可以在运行中注入变量，观察情势如何演化。
+```
+文档 ─► 本体 ─► 知识图谱 ─► 人设 ─► 社会模拟 ─► 报告 ─► 对话
+       (LLM)   (本地 SQLite)  (LLM)   (OASIS)    (LLM)
+```
 
-> **你提供：** 种子文档 + 用自然语言描述的预测需求
-> **MacFish 返回：** 一份详细的预测报告，以及一个可深度交互的模拟世界
+| 阶段 | 做什么 |
+|---|---|
+| 1. 本体生成 | DeepSeek 阅读种子材料，给出实体类型与关系类型 |
+| 2. 图谱构建 | 文档切块后抽取实体与关系，结果写入 SQLite |
+| 3. 人设生成 | 图谱中的每个实体变成一个带人设的 Agent |
+| 4. 社会模拟 | Agent 在模拟的 Twitter / Reddit 上自主互动，行为作为时序记忆写回图谱 |
+| 5. 报告生成 | Report Agent 从图谱检索并撰写分析报告，含情景树 |
+| 6. 深度互动 | 与模拟世界中的任意个体对话，或与 Report Agent 对话 |
 
-## 🔄 工作流
+**进程模型：** Flask（端口 5001）提供 API，并把每一次模拟作为**独立子进程**托管；
+前端是 Vite 应用（端口 3000）。运行中的事件注入与 Agent 访谈走基于文件的 IPC 通道
+（`ipc_commands/` / `ipc_responses/`）。
 
-1. **图谱构建** —— 文档解析、实体/关系抽取、GraphRAG 构建
-2. **环境搭建** —— 人设生成与 Agent 配置
-3. **模拟推演** —— Twitter/Reddit 双平台并行模拟，动态更新时序记忆
-4. **报告生成** —— 带检索工具集的 ReportAgent
-5. **深度互动** —— 与模拟世界中的任意个体对话，或与 ReportAgent 对话
+**存储** —— 全部位于 `backend/uploads/`：
+
+| 数据 | 位置 |
+|---|---|
+| 知识图谱 | `graphs.db`（SQLite） |
+| 上传文件与项目 | `projects/` |
+| 模拟运行 | `simulations/` |
+| 报告 | `reports/` |
+| 运行时设置（含你的 Key） | `macfish_settings.json`（已被 gitignore） |
 
 ## 🚀 快速开始
 
@@ -137,45 +149,23 @@ docker compose up -d
 
 ## 📖 使用说明
 
-### 第 1 步 —— 创建项目
-打开 <http://localhost:3000>，上传种子文档（格式见上表）或直接粘贴文本，并描述你的预测需求。
-
-### 第 2 步 —— 生成本体
-DeepSeek 分析材料后给出实体类型（Person、Organization、Event、Concept…）与关系类型。
-确认前可以自行调整。
-
-### 第 3 步 —— 构建知识图谱
-文档被切块后交给 DeepSeek 抽取实体与关系，结果写入 `backend/uploads/graphs.db`，
-可在界面里浏览节点与边。
-
-### 第 4 步 —— 运行模拟
-由图谱实体生成人设，Agent 在模拟的 Twitter/Reddit 平台上自主互动，
-其行为会作为时序记忆写回图谱。
-
-### 第 5 步 —— 生成报告
-Report Agent 从知识图谱中检索并撰写分析报告（含情景树）。之后可以与任意 Agent 对话，
-也可以直接与 Report Agent 对话。
-
-### 数据存放位置
-
-| 数据 | 位置 |
-|---|---|
-| 知识图谱 | `backend/uploads/graphs.db` |
-| 上传文件与项目 | `backend/uploads/projects/` |
-| 模拟运行 | `backend/uploads/simulations/` |
-| 报告 | `backend/uploads/reports/` |
-| 运行时设置（含你的 Key） | `macfish_settings.json`（已被 gitignore） |
+1. **创建项目** —— 打开 <http://localhost:3000>，上传种子文档（格式见上表）或粘贴文本，
+   并描述你的预测需求。
+2. **生成本体** —— DeepSeek 给出实体类型与关系类型，确认前可以自行调整。
+3. **构建知识图谱** —— 文档切块后抽取进 `graphs.db`。重建会替换掉现有图谱，所以会先问一次。
+4. **运行模拟** —— 由图谱实体生成人设，Agent 在模拟平台上自主互动，运行中可以注入事件。
+5. **生成报告** —— Report Agent 撰写分析报告与情景树；之后可与任意 Agent 或 Report Agent 对话。
 
 ### 常见问题
 
 | 现象 | 处理 |
 |---|---|
 | DeepSeek 额度用尽 | 把 `LLM_BASE_URL` / `LLM_MODEL_NAME` 指到别的 OpenAI 兼容供应商 |
-| 抽取质量不理想 | 在本体生成阶段调整实体/关系类型 |
+| 抽取质量不理想 | 在本体生成阶段调整实体 / 关系类型 |
 | 模拟太慢 | 调小 `.env` 里的 `OASIS_DEFAULT_MAX_ROUNDS`（默认 10） |
-| 模拟卡在 "running" | 检查是否有残留的 runner 进程；现在运行器会检测停滞，并在启动时回收孤儿进程 |
+| 模拟卡在 "running" | 运行器现在会检测停滞，并在启动时回收孤儿进程 |
 | 实体数看着被封顶了 | 超过读取上限的图谱会被截断，界面现在会明确提示 |
-| 想重置图谱 | 在第 1 步用「删除并重建」，或直接删掉 `backend/uploads/graphs.db` |
+| 想重置图谱 | 用「删除并重建」，或直接删掉 `backend/uploads/graphs.db` |
 
 ## 🧪 测试
 
@@ -193,12 +183,6 @@ node scripts/check-markdown.mjs                     # 18 例
 
 以上全部不需要联网，也不会消耗 LLM 调用。
 
-## 📚 文档
+## 📄 引用
 
-- [架构与运行逻辑](./docs/ARCHITECTURE.md) —— 流水线、存储布局、进程模型
-- [操作手册](./docs/MANUAL.md) —— 安装、配置、跑完一次完整推演、排查
-
-## 📄 致谢
-
-- 模拟引擎：**[OASIS](https://github.com/camel-ai/oasis)**，感谢 CAMEL-AI 团队的开源贡献
-- 上游项目：**[MiroFish](https://github.com/666ghj/MiroFish)**
+Forked from **[MiroFish](https://github.com/666ghj/MiroFish)**。
