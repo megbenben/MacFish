@@ -33,6 +33,31 @@ _cleanup_registered = False
 IS_WINDOWS = sys.platform == 'win32'
 
 
+def _pid_alive(pid: int) -> bool:
+    """进程是否还存在（POSIX：signal 0 探测）"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 存在，只是不归我们管
+    except OSError:
+        return False
+    return True
+
+
+def _pid_cmdline(pid: int) -> str:
+    """读取进程命令行（POSIX），失败返回空串"""
+    try:
+        out = subprocess.run(
+            ['ps', '-o', 'command=', '-p', str(pid)],
+            capture_output=True, text=True, timeout=5,
+        )
+        return (out.stdout or '').strip()
+    except Exception:
+        return ''
+
+
 class RunnerStatus(str, Enum):
     """运行器状态"""
     IDLE = "idle"
@@ -43,6 +68,8 @@ class RunnerStatus(str, Enum):
     STOPPED = "stopped"
     COMPLETED = "completed"
     FAILED = "failed"
+    # 子进程还活着但长时间没有任何新动作：不再无限等待，明确标记出来
+    STALLED = "stalled"
 
 
 @dataclass
@@ -496,7 +523,29 @@ class SimulationRunner:
         
         twitter_position = 0
         reddit_position = 0
-        
+
+        # 空闲兜底阈值（秒）：子进程还活着但长时间没有任何新动作时不再无限等待。
+        # 实测过一次 20 轮跑满 current_round=20/20 却永远停在 running——因为判定完成的
+        # 依据是「两个平台都写出 simulation_end 事件」，实测中有一个平台没写。
+        try:
+            idle_timeout = float(os.environ.get('SIMULATION_IDLE_TIMEOUT', '300'))
+        except ValueError:
+            idle_timeout = 300.0
+        last_progress_at = time.monotonic()
+        last_actions_count = -1
+
+        def _finish(status: RunnerStatus, reason: str):
+            """兜底收尾：写状态 + 终止进程组（finally 里还会做图谱更新器清理）"""
+            state.runner_status = status
+            state.twitter_running = False
+            state.reddit_running = False
+            cls._save_run_state(state)
+            try:
+                cls._terminate_process(process, simulation_id, timeout=5)
+            except Exception as exc:
+                logger.warning(f"兜底收尾时终止进程失败: {simulation_id}, error={exc}")
+            logger.info(f"{reason}: {simulation_id}")
+
         try:
             while process.poll() is None:  # 进程仍在运行
                 # 读取 Twitter 动作日志
@@ -504,26 +553,72 @@ class SimulationRunner:
                     twitter_position = cls._read_action_log(
                         twitter_actions_log, twitter_position, state, "twitter"
                     )
-                
+
                 # 读取 Reddit 动作日志
                 if os.path.exists(reddit_actions_log):
                     reddit_position = cls._read_action_log(
                         reddit_actions_log, reddit_position, state, "reddit"
                     )
-                
+
+                # 有新动作就刷新空闲计时
+                current_actions_count = state.twitter_actions_count + state.reddit_actions_count
+                if current_actions_count != last_actions_count:
+                    last_actions_count = current_actions_count
+                    last_progress_at = time.monotonic()
+
                 # 更新状态
                 cls._save_run_state(state)
+
+                # 兜底一：所有启用的平台都已写出 simulation_end（_read_action_log 里已置位）
+                if state.runner_status == RunnerStatus.COMPLETED:
+                    state.completed_at = state.completed_at or datetime.now().isoformat()
+                    _finish(RunnerStatus.COMPLETED, "所有平台已报告完成，收尾")
+                    return
+
+                # 兜底二：长时间没有新动作。
+                # 一条动作都还没产生时给双倍宽限——模型加载、OASIS 预热可能很慢，
+                # 不能刚起来就把一个正常启动中的模拟判成停滞。
+                idle_seconds = time.monotonic() - last_progress_at
+                rounds_done = bool(state.total_rounds) and state.current_round >= state.total_rounds
+                idle_limit = idle_timeout if (current_actions_count > 0 or rounds_done) else idle_timeout * 2
+                if idle_seconds >= idle_limit:
+                    state.error = None
+                    if state.total_rounds and state.current_round >= state.total_rounds:
+                        state.completed_at = datetime.now().isoformat()
+                        _finish(
+                            RunnerStatus.COMPLETED,
+                            f"判定为已完成（{state.current_round}/{state.total_rounds} 轮，"
+                            f"{idle_seconds:.0f}s 无新动作）",
+                        )
+                    else:
+                        state.error = (
+                            f"已停滞：{idle_seconds:.0f} 秒无新动作，"
+                            f"进度 {state.current_round}/{state.total_rounds} 轮"
+                        )
+                        _finish(RunnerStatus.STALLED, f"判定为停滞（{state.error}）")
+                    return
+
                 time.sleep(2)
-            
+
             # 进程结束后，最后读取一次日志
             if os.path.exists(twitter_actions_log):
                 cls._read_action_log(twitter_actions_log, twitter_position, state, "twitter")
             if os.path.exists(reddit_actions_log):
                 cls._read_action_log(reddit_actions_log, reddit_position, state, "reddit")
-            
+
             # 进程结束
             exit_code = process.returncode
-            
+
+            # 主动停止的竞态保护：/stop 已经写过 STOPPING/STOPPED，而终止进程会让退出码
+            # 变成 -15（SIGTERM）。这里若不判断，就会把「我主动停的」改写成「模拟失败」。
+            if state.runner_status in (RunnerStatus.STOPPING, RunnerStatus.STOPPED):
+                state.runner_status = RunnerStatus.STOPPED
+                state.twitter_running = False
+                state.reddit_running = False
+                cls._save_run_state(state)
+                logger.info(f"模拟已停止（退出码 {exit_code} 源自主动停止）: {simulation_id}")
+                return
+
             if exit_code == 0:
                 state.runner_status = RunnerStatus.COMPLETED
                 state.completed_at = datetime.now().isoformat()
@@ -607,14 +702,23 @@ class SimulationRunner:
             graph_updater = ZepGraphMemoryManager.get_updater(state.simulation_id)
         
         try:
-            with open(log_path, 'r', encoding='utf-8') as f:
+            with open(log_path, 'r', encoding='utf-8', newline='') as f:
                 f.seek(position)
+                # 游标按字节推进。不用 f.tell()：文本模式下边迭代边 tell 拿到的偏移
+                # 不可靠，而迭代完再 tell 会把「还没写完的半行」也算进去——写方是
+                # open('a') + write(json + '\n')，不是原子操作，轮询很容易撞上那个瞬间，
+                # 一旦越过去，这条动作就永久丢失（既不计数也不进 recent_actions）。
+                new_position = position
                 for line in f:
+                    line_bytes = len(line.encode('utf-8'))
+                    complete_line = line.endswith('\n')
                     line = line.strip()
                     if line:
                         try:
                             action_data = json.loads(line)
-                            
+                            # 解析成功即推进游标（下面的分支里有 continue，不能放在循环末尾）
+                            new_position += line_bytes
+
                             # 处理事件类型的条目
                             if "event_type" in action_data:
                                 event_type = action_data.get("event_type")
@@ -684,8 +788,19 @@ class SimulationRunner:
                                 graph_updater.add_activity_from_dict(action_data, platform)
                             
                         except json.JSONDecodeError:
-                            pass
-                return f.tell()
+                            if complete_line:
+                                # 整行写完了却解析不了（真损坏）：告警后跳过，避免整条日志卡死
+                                logger.warning(f"动作日志存在无法解析的行，已跳过: {log_path}")
+                                new_position += line_bytes
+                            else:
+                                # 半行：保留游标，等下次轮询重读，绝不越过
+                                logger.debug(f"动作日志末尾有未写完的行，保留游标等待重读: {log_path}")
+                                break
+                    else:
+                        # 空行（含只有换行符的行）：完整就跳过
+                        if complete_line:
+                            new_position += line_bytes
+                return new_position
         except Exception as e:
             logger.warning(f"读取动作日志失败: {log_path}, error={e}")
             return position
@@ -1285,6 +1400,82 @@ class SimulationRunner:
         logger.info("模拟进程清理完成")
     
     @classmethod
+    def reap_orphans(cls) -> List[str]:
+        """
+        回收上一次进程留下的孤儿模拟进程（启动时调用一次）
+
+        子进程是以 `start_new_session=True` 启动的，**不随父进程退出**；而进程登记表
+        （`_processes`）是纯内存的。所以后端一旦被 debug 重载或异常退出，登记表就没了，
+        那些子进程会变成 ppid=1 的孤儿继续跑：既占 CPU，又会和新进程抢同一份
+        `actions.jsonl` 和 OASIS `*.db`，数据互相污染且状态永远不收敛。
+
+        `run_state.json` 里本来就存了 `process_pid`，不需要额外文件。这里扫一遍：
+        - PID 已死的 → 把状态收敛为 STALLED（否则前端一直转圈）
+        - PID 还活着但不归本进程管的 → 终止它，状态同样收敛为 STALLED
+
+        模拟产物一律保留，不删任何数据。POSIX 实现；Windows 下跳过并给出 debug 日志。
+
+        Returns:
+            被处理过的 simulation_id 列表
+        """
+        handled: List[str] = []
+
+        if IS_WINDOWS:
+            logger.debug("Windows 平台暂不做孤儿回收扫描")
+            return handled
+
+        if not os.path.isdir(cls.RUN_STATE_DIR):
+            return handled
+
+        for entry in sorted(os.listdir(cls.RUN_STATE_DIR)):
+            sim_dir = os.path.join(cls.RUN_STATE_DIR, entry)
+            if not os.path.isdir(sim_dir):
+                continue
+            # 本次进程已经登记过的，交给正常流程
+            if entry in cls._processes:
+                continue
+
+            state = cls._load_run_state(entry)
+            if not state or state.runner_status not in (RunnerStatus.STARTING, RunnerStatus.RUNNING):
+                continue
+
+            pid = state.process_pid
+            if not pid:
+                continue
+
+            orphan_alive = _pid_alive(pid) and os.getpgid(pid) != os.getpgid(0)
+
+            if orphan_alive:
+                cmdline = _pid_cmdline(pid)
+                # 安全阀：确认这确实是本项目的模拟脚本，绝不误杀别的进程
+                if 'simulation' not in cmdline or 'run_' not in cmdline:
+                    logger.warning(
+                        f"run_state 记录的 pid={pid} 仍在运行，但命令行不像是模拟脚本，跳过: {cmdline[:120]}"
+                    )
+                    continue
+                logger.warning(f"发现孤儿模拟进程，正在回收: simulation={entry}, pid={pid}")
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except Exception as exc:
+                    logger.warning(f"回收孤儿进程失败: simulation={entry}, pid={pid}, error={exc}")
+                    continue
+
+            state.runner_status = RunnerStatus.STALLED
+            state.twitter_running = False
+            state.reddit_running = False
+            state.error = (
+                "检测到上次运行的孤儿进程，已回收" if orphan_alive
+                else "进程已不存在（后端重启后回收）"
+            )
+            cls._save_run_state(state)
+            cls._run_states[entry] = state
+            handled.append(entry)
+
+        if handled:
+            logger.info(f"孤儿回收完成，共处理 {len(handled)} 条: {', '.join(handled)}")
+        return handled
+
+    @classmethod
     def register_cleanup(cls):
         """
         注册清理函数
@@ -1306,7 +1497,13 @@ class SimulationRunner:
         if is_debug_mode and not is_reloader_process:
             _cleanup_registered = True  # 标记已注册，防止子进程再次尝试
             return
-        
+
+        # 上一轮进程（debug 重载 / 异常退出）留下的孤儿子进程在这里回收
+        try:
+            cls.reap_orphans()
+        except Exception as e:
+            logger.warning(f"孤儿进程回收失败（不影响启动）: {e}")
+
         # 保存原有的信号处理器
         original_sigint = signal.getsignal(signal.SIGINT)
         original_sigterm = signal.getsignal(signal.SIGTERM)

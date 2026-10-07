@@ -248,13 +248,32 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
     if not os.path.exists(simulation_dir):
         return False, {"reason": "模拟目录不存在"}
     
+    # 先读 state.json：既要拿平台开关来定「必要文件」，也要拿 status 判定是否就绪
+    state_file = os.path.join(simulation_dir, "state.json")
+    if not os.path.exists(state_file):
+        return False, {
+            "reason": "缺少必要文件",
+            "missing_files": ["state.json"],
+            "existing_files": [],
+        }
+
+    import json
+    try:
+        with open(state_file, 'r', encoding='utf-8') as f:
+            state_data = json.load(f)
+    except Exception as e:
+        return False, {"reason": f"state.json 读取失败: {e}"}
+
     # 必要文件列表（不包括脚本，脚本位于 backend/scripts/）
-    required_files = [
-        "state.json",
-        "simulation_config.json",
-        "reddit_profiles.json",
-        "twitter_profiles.csv"
-    ]
+    # 按实际启用的平台来定：单平台模拟不该因为另一个平台没有人设文件而永远判为「未就绪」，
+    # 否则 /prepare 会反复重跑整批人设，/prepare/status 也永远不收敛。
+    enable_twitter = state_data.get("enable_twitter", True)
+    enable_reddit = state_data.get("enable_reddit", True)
+    required_files = ["state.json", "simulation_config.json"]
+    if enable_reddit:
+        required_files.append("reddit_profiles.json")
+    if enable_twitter:
+        required_files.append("twitter_profiles.csv")
     
     # 检查文件是否存在
     existing_files = []
@@ -273,13 +292,8 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
             "existing_files": existing_files
         }
     
-    # 检查state.json中的状态
-    state_file = os.path.join(simulation_dir, "state.json")
+    # 检查state.json中的状态（state_data 已在上面读过）
     try:
-        import json
-        with open(state_file, 'r', encoding='utf-8') as f:
-            state_data = json.load(f)
-        
         status = state_data.get("status", "")
         config_generated = state_data.get("config_generated", False)
         
@@ -293,18 +307,35 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
         # - running: 正在运行，说明准备早就完成了
         # - completed: 运行完成，说明准备早就完成了
         # - stopped: 已停止，说明准备早就完成了
+        # - paused: 历史遗留（早期 /stop 写的就是这个值），一并认作已准备，否则那些记录再也起不来
         # - failed: 运行失败（但准备是完成的）
-        prepared_statuses = ["ready", "preparing", "running", "completed", "stopped", "failed"]
+        # - stalled: 跑不动了（监视线程兜底判定），准备同样是完成的
+        prepared_statuses = ["ready", "preparing", "running", "completed", "stopped", "paused", "failed", "stalled"]
         if status in prepared_statuses and config_generated:
-            # 获取文件统计信息
-            profiles_file = os.path.join(simulation_dir, "reddit_profiles.json")
+            # 获取文件统计信息（人设文件按实际启用的平台取）
             config_file = os.path.join(simulation_dir, "simulation_config.json")
+            profiles_file = None
+            for candidate in ("reddit_profiles.json", "twitter_profiles.csv"):
+                candidate_path = os.path.join(simulation_dir, candidate)
+                if os.path.exists(candidate_path):
+                    profiles_file = candidate_path
+                    break
             
             profiles_count = 0
-            if os.path.exists(profiles_file):
-                with open(profiles_file, 'r', encoding='utf-8') as f:
-                    profiles_data = json.load(f)
+            if profiles_file and profiles_file.endswith('.json'):
+                try:
+                    with open(profiles_file, 'r', encoding='utf-8') as f:
+                        profiles_data = json.load(f)
                     profiles_count = len(profiles_data) if isinstance(profiles_data, list) else 0
+                except Exception as e:
+                    logger.debug(f"读取人设文件失败（不影响就绪判定）: {profiles_file}, error={e}")
+            elif profiles_file:
+                # 只有 twitter_profiles.csv 时用行数近似（首行为表头）
+                try:
+                    with open(profiles_file, 'r', encoding='utf-8') as f:
+                        profiles_count = max(sum(1 for _ in f) - 1, 0)
+                except Exception as e:
+                    logger.debug(f"读取人设文件失败（不影响就绪判定）: {profiles_file}, error={e}")
             
             # 如果状态是preparing但文件已完成，自动更新状态为ready
             if status == "preparing":
@@ -1818,9 +1849,11 @@ def stop_simulation():
         manager = SimulationManager()
         state = manager.get_simulation(simulation_id)
         if state:
-            state.status = SimulationStatus.PAUSED
+            # 必须写 STOPPED：写 PAUSED 会被 _check_simulation_prepared 的就绪白名单
+            # 拒之门外，于是「停止」之后再也 /start 不了（force 也走不到那个分支）。
+            state.status = SimulationStatus.STOPPED
             manager._save_simulation_state(state)
-        
+
         return jsonify({
             "success": True,
             "data": run_state.to_dict()

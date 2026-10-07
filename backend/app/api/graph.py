@@ -380,7 +380,28 @@ def build_graph():
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
         chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
         chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
-        
+
+        # 校验切块参数：切块逻辑的下一步是 `start = end - overlap`，
+        # 一旦 overlap >= chunk_size 就会原地打转，而后台线程不会抛错也不会超时，
+        # 只会让任务永远停在 building 并持续吃内存。这里挡在最外层。
+        try:
+            chunk_size = int(chunk_size)
+            chunk_overlap = int(chunk_overlap)
+        except (TypeError, ValueError):
+            return jsonify({
+                "success": False,
+                "error": t('api.invalidChunkConfig', size=chunk_size, overlap=chunk_overlap)
+            }), 400
+
+        # overlap 不只要小于 chunk_size，还得留出足够的推进量：overlap 越接近
+        # chunk_size，块数就越接近「文本长度」（每轮只前进几个字符），一份 1MB 的
+        # 材料能切出上百万个块。默认是 50/500（10%），这里放宽到 50% 已经是上限。
+        if not (1 <= chunk_size <= Config.MAX_CHUNK_SIZE) or not (0 <= chunk_overlap <= chunk_size // 2):
+            return jsonify({
+                "success": False,
+                "error": t('api.invalidChunkConfig', size=chunk_size, overlap=chunk_overlap)
+            }), 400
+
         # 更新项目配置
         project.chunk_size = chunk_size
         project.chunk_overlap = chunk_overlap

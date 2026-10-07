@@ -16,6 +16,9 @@ logger = get_logger('mirofish.zep_paging')
 
 _DEFAULT_PAGE_SIZE = 100
 _MAX_NODES = 2000
+#: 边的上限：一张图通常边远多于节点，所以给得比节点宽，但不能没有——
+#: 全景检索（panorama_search）会把整张图的边拉进内存，没有上限就可能吃满内存。
+_MAX_EDGES = 4000
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 2.0  # seconds, doubles each retry
 
@@ -105,8 +108,9 @@ def fetch_all_edges(
     page_size: int = _DEFAULT_PAGE_SIZE,
     max_retries: int = _DEFAULT_MAX_RETRIES,
     retry_delay: float = _DEFAULT_RETRY_DELAY,
+    max_items: int = _MAX_EDGES,
 ) -> list[Any]:
-    """分页获取图谱所有边，返回完整列表。每页请求自带重试。"""
+    """分页获取图谱所有边，最多返回 max_items 条（默认 4000）。每页请求自带重试。"""
     all_edges: list[Any] = []
     cursor: str | None = None
     page_num = 0
@@ -129,6 +133,10 @@ def fetch_all_edges(
             break
 
         all_edges.extend(batch)
+        if len(all_edges) >= max_items:
+            all_edges = all_edges[:max_items]
+            logger.warning(f"Edge count reached limit ({max_items}), stopping pagination for graph {graph_id}")
+            break
         if len(batch) < page_size:
             break
 

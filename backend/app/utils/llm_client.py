@@ -11,6 +11,10 @@ from openai import OpenAI
 
 def _clean_think_tags(content: str) -> str:
     """移除模型输出中的 <think> 标签（DeepSeek-R1、MiniMax等推理模型）"""
+    # 供应商返回空内容（或被内容过滤）时 content 可能是 None，这里兜底成空串：
+    # 否则 re.sub 会抛 TypeError，而调用方（report_agent）的「空响应就重试一次」
+    # 兜底判断的是 `response is None`，永远收不到这个异常，结果整份报告作废。
+    content = content or ''
     # 标准闭合标签
     content = re.sub(r'<think>[\s\S]*?</think>', '', content)
     # 未闭合标签（从<think>到结尾）
@@ -93,6 +97,7 @@ class LLMClient:
 
         response = self.client.chat.completions.create(**kwargs)
         content = response.choices[0].message.content
+        # 空内容统一归一成空串（而不是 None 或抛异常），调用方据此判断「这次没拿到东西」
         content = _clean_think_tags(content)
         return content
 

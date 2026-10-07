@@ -25,6 +25,9 @@ from .parsers import (  # noqa: F401  (对外转出，方便调用方直接 impo
     UnsupportedFormatError,
 )
 from .parsers.text_parser import read_text_with_fallback as _read_text_with_fallback  # noqa: F401
+from .logger import get_logger
+
+logger = get_logger('mirofish.file_parser')
 
 
 class FileParser:
@@ -107,34 +110,53 @@ def split_text_into_chunks(
         text: 原始文本
         chunk_size: 每块的字符数
         overlap: 重叠字符数
-        
+
     Returns:
         文本块列表
     """
+    # 防御：chunk_size 非正、或 overlap 不小于 chunk_size 时，下面的
+    # `start = end - overlap` 会原地打转（甚至倒退），调用方是在后台线程里跑的，
+    # 表现为任务永远停在 building、内存持续增长。这里夹住参数，保证每轮严格前进。
+    chunk_size = max(int(chunk_size), 1)
+    overlap = max(int(overlap), 0)
+    if overlap >= chunk_size:
+        overlap = chunk_size - 1
+
     if len(text) <= chunk_size:
         return [text] if text.strip() else []
-    
+
+    # 句子边界的切点必须越过 overlap，否则切完仍会停在原地
+    min_cut = max(chunk_size * 0.3, overlap)
+
     chunks = []
     start = 0
-    
+
     while start < len(text):
         end = start + chunk_size
-        
+
         # 尝试在句子边界处分割
         if end < len(text):
             # 查找最近的句子结束符
             for sep in ['。', '！', '？', '.\n', '!\n', '?\n', '\n\n', '. ', '! ', '? ']:
                 last_sep = text[start:end].rfind(sep)
-                if last_sep != -1 and last_sep > chunk_size * 0.3:
+                if last_sep != -1 and last_sep > min_cut:
                     end = start + last_sep + len(sep)
                     break
-        
+
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
-        
+
+        if end >= len(text):
+            break
+
         # 下一个块从重叠位置开始
-        start = end - overlap if end < len(text) else len(text)
-    
+        next_start = end - overlap
+        if next_start <= start:
+            # 上面已夹住参数，这里是最后一道保险，宁可少切也不死循环
+            logger.warning(f"分块未能前进（start={start}, end={end}, overlap={overlap}），提前结束")
+            break
+        start = next_start
+
     return chunks
 

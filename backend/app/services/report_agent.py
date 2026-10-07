@@ -1443,8 +1443,9 @@ class ReportAgent:
                 max_tokens=4096
             )
 
-            # 检查 LLM 返回是否为 None（API 异常或内容为空）
-            if response is None:
+            # 检查 LLM 返回是否为空（API 异常或内容为空）
+            # 注意用 `not response`：空串同样要走重试，而不是继续拿空内容往下解析
+            if not response:
                 logger.warning(t('report.sectionIterNone', title=section.title, iteration=iteration + 1))
                 # 如果还有迭代次数，添加消息并重试
                 if iteration < max_iterations - 1:
@@ -1644,8 +1645,8 @@ class ReportAgent:
             max_tokens=4096
         )
 
-        # 检查强制收尾时 LLM 返回是否为 None
-        if response is None:
+        # 检查强制收尾时 LLM 返回是否为空
+        if not response:
             logger.error(t('report.sectionForceFailed', title=section.title))
             final_answer = t('report.sectionGenFailedContent')
         elif "Final Answer:" in response:
