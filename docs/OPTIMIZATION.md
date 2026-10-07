@@ -9,6 +9,54 @@
 
 ---
 
+## 0. 第三轮（2026-10-07 晚）：外部审查 + 22 项修复
+
+在本文档之上另开两路独立的只读代码审查（后端 / 前端），**新查出 17 条本文档未覆盖的真问题**
+（下表 B* 为后端审查、F* 为前端审查），连同原有条目一并打分后，本轮实施 22 项。
+下轮清单见本文档末尾"附录：余下待办"。
+
+本轮修掉的（编号沿用本文档原有条目号，新增问题用 B/F 前缀）：
+
+| 编号 | 问题 | 状态 |
+|---|---|---|
+| B1 | `chunk_size`/`chunk_overlap` 不校验 → `start = end - overlap` 原地打转，后台线程死循环到 OOM | ✅ 已修 |
+| B2 | `/stop` 写 `paused` 而就绪白名单没有它 → **停止后再也 `/start` 不了**（force 也走不到） | ✅ 已修 |
+| B3 | 停止竞态：睡醒的监视线程拿退出码 `-15` 把 `STOPPED` 改写回 `FAILED` | ✅ 已修 |
+| B4 | 单平台模拟永远过不了就绪检查（`required_files` 硬编码两个平台） | ✅ 已修 |
+| B5 | `LLMClient.chat` 遇空 content 抛 `TypeError` 让整份报告作废；`report_agent` 的 `is None` 兜底是死代码 | ✅ 已修 |
+| B6 | `_read_action_log` 解析失败仍 `f.tell()` 越过半行 → 动作永久丢失且无日志 | ✅ 已修 |
+| F1 | 前端完成判据漏 `failed`/`stalled` → 失败时轮询永不停止，页面永远「运行中/生成中」 | ✅ 已修 |
+| F2 | Step3 写死 `force: true` → 后端预算护栏从 UI 走的路永不触发；预估与启动并发 | ✅ 已修 |
+| F4 | Home 的「不支持的文件」提示只写不读，从未渲染（1.2 的整改其实没生效） | ✅ 已修 |
+| F5 | 文件选择框不重置 → 移除后重选同一文件无反应 | ✅ 已修 |
+| F6 | 前端写死绝对 `baseURL` → `vite.config.js` 的 `/api` 代理是死配置，每请求跨域 | ✅ 已修 |
+| F7 | 从首页历史进 Step 2 会静默杀掉正在跑的模拟 | ✅ 已修 |
+| F8 | `Step5Interaction` 缺相等性守卫 + `onMounted` 重复调用 → 进页面发两遍全量请求 | ✅ 已修 |
+| F9 | `MainView` 的 Step2 接线是死路径，且缺 `>= 3` 分支（改一下就是空白页） | ✅ 已修（删除死接线） |
+| F10 | `Step5Interaction` 未声明 `systemLogs` prop，落到 DOM 上 | ✅ 已修 |
+| 1.5 | `TaskManager` 重启后 task_id 失效、图谱任务无补偿 | ⏳ 下轮 |
+| 1.6 | `fetch_all_edges` 没有数量上限 | ✅ 已修 |
+| 1.7 | `generate_python_code()` 必然 `ImportError`（零调用方） | ✅ 已删除 |
+| 1.8 遗留 | 构建前询问「累积 or 重建」+ 2000 上限界面提示 | ⏳ 下轮（另发现 `force` 重建时旧图谱只置空 `graph_id` 不删行，存在**孤儿图谱泄漏**，要一并设计） |
+| 2.5 | debug 重载后的孤儿子进程无人回收 | ✅ 已修（启动时扫 `run_state.json` 回收） |
+| 2.6 | 模拟跑完不收敛到 completed | ✅ 已修（新增空闲兜底 + `stalled` 状态） |
+| 3.1 | `views/Process.vue` 2070 行死代码 | ✅ 已删 |
+| 3.3 | 两份 `renderMarkdown` + 无转义 | ⏳ 下轮 |
+| 3.4 | `languages.json` 声明 7 种语言但只有 2 个文件 | ✅ 已对齐（并对不上时改为告警） |
+| 3.5 | 死导出 + 项目没有自动化测试 | ✅ 部分：删掉死导出；新增 `tests/test_pure_utils.py`、`tests/test_runner_fixes.py`（测试总数 40 → 69） |
+| A2 | 模拟自然跑完不收敛（见 2.6） | ✅ 已修 |
+| A11 | 两份 `renderMarkdown` 合并 + 转义 | ⏳ 下轮 |
+| B7 | `ReportConsoleLogger` 把 FileHandler 挂到全局 logger → 并发报告日志互相污染 | ⏳ 下轮 |
+| F3 | `GraphPanel` 每次数据变化整图重建，缩放/选中丢失 | ⏳ 下轮 |
+| 2.1 / 2.2 / 2.4 / 3.2 / 2.7 / 4.2 / 4.3 | SSE、抽取节奏、异步上传、拆巨型组件、长任务阻塞诊断、上传进度、XML 加固 | ⏳ 下轮 |
+
+验证（全部离线、零 LLM 花费）：`uv run pytest tests -q` **69 passed**；
+`uv run python scripts/run_benchmark.py verify` **39/39**；
+`uv run python scripts/test_multi_format.py` **11/11**；`npm run build` 通过。
+
+
+---
+
 ## 一、正确性
 
 ### 1.1 ✅ `ZEP_API_KEY` 启动校验是个死结（2026-10-07 已修）
