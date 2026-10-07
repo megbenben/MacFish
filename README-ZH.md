@@ -1,249 +1,204 @@
 <div align="center">
 
-<img src="./static/image/MiroFish_logo_compressed.jpeg" alt="MacFish Logo" width="75%"/>
+<img src="./static/image/MiroFish_logo_compressed.jpeg" alt="MacFish Logo" width="70%"/>
 
-<a href="https://trendshift.io/repositories/16144" target="_blank"><img src="https://trendshift.io/api/badge/repositories/16144" alt="666ghj%2FMacFish | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-简洁通用的群体智能引擎，预测万物
+简洁通用的群体智能引擎，预测万物 —— 可直接使用 DeepSeek API 运行
 </br>
 <em>A Simple and Universal Swarm Intelligence Engine, Predicting Anything</em>
-
-<a href="https://www.shanda.com/" target="_blank"><img src="./static/image/shanda_logo.png" alt="666ghj%2MacFish | Shanda" height="40"/></a>
-
-[![GitHub Stars](https://img.shields.io/github/stars/megbenben/MacFish?style=flat-square&color=DAA520)](https://github.com/megbenben/MacFish/stargazers)
-[![GitHub Watchers](https://img.shields.io/github/watchers/megbenben/MacFish?style=flat-square)](https://github.com/megbenben/MacFish/watchers)
-[![GitHub Forks](https://img.shields.io/github/forks/megbenben/MacFish?style=flat-square)](https://github.com/megbenben/MacFish/network)
-[![Docker](https://img.shields.io/badge/Docker-Build-2496ED?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/megbenben/MacFish)
-
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=flat-square&logo=discord&logoColor=white)](http://discord.gg/ePf5aPaHnA)
-[![X](https://img.shields.io/badge/X-Follow-000000?style=flat-square&logo=x&logoColor=white)](https://x.com/mirofish_ai)
-[![Instagram](https://img.shields.io/badge/Instagram-Follow-E4405F?style=flat-square&logo=instagram&logoColor=white)](https://www.instagram.com/mirofish_ai/)
+</br>
+<sub>Forked from <a href="https://github.com/666ghj/MiroFish">MiroFish</a></sub>
 
 [English](./README.md) | [中文文档](./README-ZH.md)
 
 </div>
 
-## ⚡ 项目概述
+---
 
-**MacFish** 是一款基于多智能体技术的新一代 AI 预测引擎。通过提取现实世界的种子信息（如突发新闻、政策草案、金融信号），自动构建出高保真的平行数字世界。在此空间内，成千上万个具备独立人格、长期记忆与行为逻辑的智能体进行自由交互与社会演化。你可透过「上帝视角」动态注入变量，精准推演未来走向——**让未来在数字沙盘中预演，助决策在百战模拟后胜出**。
+## 🔧 这个 fork 改了什么
 
-> 你只需：上传种子材料（数据分析报告或者有趣的小说故事），并用自然语言描述预测需求</br>
-> MacFish 将返回：一份详尽的预测报告，以及一个可深度交互的高保真数字世界
+本 fork 把整条流水线重写为**直连单一 LLM 供应商 + 本地存储**，并修掉了一批通过审计原代码发现的
+正确性问题。下面每一条都在本地用离线测试套件验证过（不消耗任何 LLM 调用）。
 
-### 我们的愿景
+### 一、直连 DeepSeek API —— 不再依赖 Zep Cloud 与外部图数据库
 
-MacFish 致力于打造映射现实的群体智能镜像，通过捕捉个体互动引发的群体涌现，突破传统预测的局限：
+知识图谱原本依赖 Zep Cloud，意味着第二个供应商、第二个 API Key，并且那个 Key 一旦缺失就
+**直接起不来**。现在完全本地化：
 
-- **于宏观**：我们是决策者的预演实验室，让政策与公关在零风险中试错
-- **于微观**：我们是个人用户的创意沙盘，无论是推演小说结局还是探索脑洞，皆可有趣、好玩、触手可及
+- 抽取由 **DeepSeek**（`deepseek-chat`）通过标准 OpenAI 兼容接口完成
+- 图谱存储是**本地 SQLite 文件**（`backend/uploads/graphs.db`）
+- **不再需要 `ZEP_API_KEY`**，它也已从启动校验里移除
+- 任何 OpenAI 兼容的接口都可以，改 `LLM_BASE_URL` / `LLM_MODEL_NAME` 即可
 
-从严肃预测到趣味仿真，我们让每一个如果都能看见结果，让预测万物成为可能。
+### 二、多格式文档摄入
 
-## 🌐 在线体验
+种子材料不再限于 PDF / Markdown / TXT：
 
-欢迎访问在线 Demo 演示环境，体验我们为你准备的一次关于热点舆情事件的推演预测：[mirofish-live-demo](https://666ghj.github.io/mirofish-demo/)
+| 类别 | 格式 |
+|---|---|
+| 文档 | `.pdf`（文字层，扫描页可选 OCR）、`.docx`、`.pptx`、`.xlsx`、`.xlsm` |
+| 文本 | `.txt`、`.md`、`.markdown`、`.csv` |
+| 图片 | `.png`、`.jpg`、`.jpeg`、`.heic`、`.heif`、`.tiff`、`.tif`、`.bmp`、`.webp`、`.gif`（走 OCR） |
 
-## 📸 系统截图
+- OCR 使用 **macOS 本地 Vision 框架**，免费、离线、无需密钥（`uv sync --extra ocr-macos`）
+- 也可以改用视觉大模型接口
+- 旧版 Office 二进制格式（`.doc` / `.ppt` / `.xls`）会被明确拒绝并提示「另存为 .docx/.pptx/.xlsx」，
+  而不是静默失败
+- 每个文件的解析结果都会回报，一个坏文件不再拖垮整批上传
 
-<div align="center">
-<table>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图1.png" alt="截图1" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图2.png" alt="截图2" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图3.png" alt="截图3" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图4.png" alt="截图4" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图5.png" alt="截图5" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图6.png" alt="截图6" width="100%"/></td>
-</tr>
-</table>
-</div>
+### 三、代码审计带来的工程修复
 
-## 🎬 演示视频
+| 方面 | 改了什么 |
+|---|---|
+| 图谱重复累积 | 节点身份从「每次抽取生成新 `uuid4()`」改为 `(graph_id, name)`。反复重建会把每个实体重新插入一遍——实测有个库**9336 行节点实际只有 960 个不同名字**。附迁移脚本 `scripts/dedupe_graph.py` |
+| 模拟生命周期 | 卡住的模拟不再永远停在 "running"；后端重启遗留的孤儿子进程会被识别并回收；主动停止不再被误报成失败 |
+| 成本护栏 | 人设生成与模拟启动前都会给出预估调用次数，超出设置的预算上限时先拦下 |
+| 任务持久化 | 长任务跨后端重启存活，不再让界面永远转圈 |
+| 安全默认值 | 后端默认只绑 `127.0.0.1`，CORS 只放行本地开发源 |
+| 测试 | `pytest` 从 **0 个测试变成 92 个**，另有离线回测框架（39 项检查）、多格式摄入检查（11 例）、前端 Markdown 检查（18 例） |
 
-### 1. 武汉大学舆情推演预测 + MacFish项目讲解
+## ⚡ 概述
 
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1VYBsBHEMY/" target="_blank"><img src="./static/image/武大模拟演示封面.png" alt="MacFish Demo Video" width="75%"/></a>
+**MacFish** 是一个多智能体预测引擎。它从现实世界提取种子信息（突发新闻、政策草案、金融信号，
+或任意文档），构建出一个平行数字世界：大量拥有独立人设与记忆的智能体在模拟社交平台上自由互动。
+你可以在运行中注入变量，观察情势如何演化。
 
-点击图片查看使用微舆BettaFish生成的《武大舆情报告》进行预测的完整演示视频
-</div>
+> **你提供：** 种子文档 + 用自然语言描述的预测需求
+> **MacFish 返回：** 一份详细的预测报告，以及一个可深度交互的模拟世界
 
-### 2. 《红楼梦》失传结局推演预测
+## 🔄 工作流
 
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1cPk3BBExq" target="_blank"><img src="./static/image/红楼梦模拟推演封面.jpg" alt="MacFish Demo Video" width="75%"/></a>
-
-点击图片查看基于《红楼梦》前80回数十万字，MacFish深度预测失传结局
-</div>
-
-> **金融方向推演预测**、**时政要闻推演预测**等示例陆续更新中...
-
-## 🔄 工作流程
-
-1. **图谱构建**：现实种子提取 & 个体与群体记忆注入 & GraphRAG构建
-2. **环境搭建**：实体关系抽取 & 人设生成 & 环境配置Agent注入仿真参数
-3. **开始模拟**：双平台并行模拟 & 自动解析预测需求 & 动态更新时序记忆
-4. **报告生成**：ReportAgent拥有丰富的工具集与模拟后环境进行深度交互
-5. **深度互动**：与模拟世界中的任意一位进行对话 & 与ReportAgent进行对话
-
-## 📖 使用指南
-
-### 第一步 — 创建项目
-打开 http://localhost:3000，输入项目名称（如"电动车价格战分析"），上传相关文档（PDF/Markdown/TXT）或直接粘贴文本。
-
-### 第二步 — 生成本体（Ontology）
-系统调用 DeepSeek 自动分析文档，生成实体类型（人物、组织、事件、概念等）和关系类型（发表声明、竞争关系、价格变动等）。可在界面上手动调整后确认。
-
-### 第三步 — 构建知识图谱
-- 文档自动分块后逐批调用 DeepSeek 提取实体和关系
-- 结果存储在本地 SQLite 数据库（`backend/uploads/graphs.db`）
-- 可在界面上查看提取的节点（实体）和边（关系）
-
-### 第四步 — 运行模拟
-- 基于图谱实体生成虚拟 Agent（人物画像）
-- 配置模拟参数（平台、轮数、时间线）
-- Agent 在模拟 Twitter/Reddit 平台上自主互动
-- Agent 行动回写到图谱，形成时序记忆
-
-### 第五步 — 生成报告
-- Report Agent 从图谱中检索信息
-- 自动生成分析报告（趋势、观点分布、关键事件）
-- 可与任意 Agent 或 Report Agent 进行对话交互
-
-### 数据存储
-
-| 数据 | 存储位置 |
-|------|----------|
-| 知识图谱数据库 | `backend/uploads/graphs.db` |
-| 上传的文档 | `backend/uploads/` |
-| 模拟数据 | `backend/uploads/simulations/` |
-
-### 常见问题
-
-| 问题 | 解决方法 |
-|------|----------|
-| DeepSeek 余额不足 | 修改 `.env` 切换其他兼容 API（Kimi/Qwen/OpenAI 等） |
-| 图谱提取效果差 | 在本体生成阶段细化实体类型和关系类型定义 |
-| 模拟速度太慢 | 在 `.env` 中减小 `OASIS_DEFAULT_MAX_ROUNDS`（默认 10 轮） |
-| 重置图谱 | 删除项目后重建，或删除 `backend/uploads/graphs.db` |
+1. **图谱构建** —— 文档解析、实体/关系抽取、GraphRAG 构建
+2. **环境搭建** —— 人设生成与 Agent 配置
+3. **模拟推演** —— Twitter/Reddit 双平台并行模拟，动态更新时序记忆
+4. **报告生成** —— 带检索工具集的 ReportAgent
+5. **深度互动** —— 与模拟世界中的任意个体对话，或与 ReportAgent 对话
 
 ## 🚀 快速开始
 
-### 一、源码部署（推荐）
+### 环境要求
 
-#### 前置要求
+| 工具 | 版本 | 检查 |
+|---|---|---|
+| **Node.js** | 18+ | `node -v` |
+| **Python** | ≥3.11, ≤3.12 | `python --version` |
+| **uv** | 最新版 | `uv --version` |
 
-| 工具 | 版本要求 | 说明 | 安装检查 |
-|------|---------|------|---------|
-| **Node.js** | 18+ | 前端运行环境，包含 npm | `node -v` |
-| **Python** | ≥3.11, ≤3.12 | 后端运行环境 | `python --version` |
-| **uv** | 最新版 | Python 包管理器 | `uv --version` |
+> 后端需要 Python ≥3.11。系统自带的 Python 太旧时，可以让 uv 代管：
+> `uv python install 3.12`。
 
-#### 1. 配置环境变量
+### 1. 配置环境变量
 
 ```bash
-# 复制示例配置文件
 cp .env.example .env
-
-# 编辑 .env 文件，填入必要的 API 密钥
+# 然后编辑 .env，填入你的 DeepSeek Key
 ```
-
-**必需的环境变量：**
 
 ```env
-# LLM API配置（支持 OpenAI SDK 格式的任意 LLM API）
-# 默认使用 DeepSeek API — 在 https://platform.deepseek.com/ 获取密钥
-LLM_API_KEY=sk-你的deepseek密钥
+LLM_PROVIDER=network
+LLM_API_KEY=sk-your_deepseek_api_key
 LLM_BASE_URL=https://api.deepseek.com
 LLM_MODEL_NAME=deepseek-chat
-
-# 备选：Kimi (月之暗面) API
-# LLM_BASE_URL=https://api.moonshot.cn/v1
-# LLM_MODEL_NAME=moonshot-v1-8k
-
-# 备选：阿里百炼 Qwen
-# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# LLM_MODEL_NAME=qwen-plus
 ```
 
-> **不再需要 Zep Cloud！** 知识图谱提取现在由 DeepSeek LLM 驱动，使用本地 SQLite 存储 — 无需外部图数据库依赖。
+> **不需要 Zep Cloud Key**，知识图谱是本地 SQLite。任何 OpenAI 兼容的供应商都可以，
+> 改 `LLM_BASE_URL` / `LLM_MODEL_NAME` 指过去即可。
 
-#### 2. 安装依赖
+### 2. 安装依赖
 
 ```bash
-# 一键安装所有依赖（根目录 + 前端 + 后端）
 npm run setup:all
 ```
 
-或者分步安装：
+也可以分步：`npm run setup`（Node）与 `npm run setup:backend`（Python）。
+
+可选：图片与扫描版 PDF 的本地 OCR（仅 macOS）：
 
 ```bash
-# 安装 Node 依赖（根目录 + 前端）
-npm run setup
-
-# 安装 Python 依赖（后端，自动创建虚拟环境）
-npm run setup:backend
+cd backend && uv sync --extra ocr-macos
 ```
 
-#### 3. 启动服务
+### 3. 启动
 
 ```bash
-# 同时启动前后端（在项目根目录执行）
 npm run dev
 ```
 
-**服务地址：**
-- 前端：`http://localhost:3000`
-- 后端 API：`http://localhost:5001`
+- 前端：<http://localhost:3000>
+- 后端 API：<http://localhost:5001>
 
-**单独启动：**
+单独启动：`npm run backend` / `npm run frontend`。
 
-```bash
-npm run backend   # 仅启动后端
-npm run frontend  # 仅启动前端
-```
-
-### 二、Docker 部署
+### Docker
 
 ```bash
-# 1. 配置环境变量（同源码部署）
 cp .env.example .env
-
-# 2. 拉取镜像并启动
 docker compose up -d
 ```
 
-默认会读取根目录下的 `.env`，并映射端口 `3000（前端）/5001（后端）`
+## 📖 使用说明
 
-> 在 `docker-compose.yml` 中已通过注释提供加速镜像地址，可按需替换
+### 第 1 步 —— 创建项目
+打开 <http://localhost:3000>，上传种子文档（格式见上表）或直接粘贴文本，并描述你的预测需求。
 
-## 📬 更多交流
+### 第 2 步 —— 生成本体
+DeepSeek 分析材料后给出实体类型（Person、Organization、Event、Concept…）与关系类型。
+确认前可以自行调整。
 
-<div align="center">
-<img src="./static/image/QQ群.png" alt="QQ交流群" width="60%"/>
-</div>
+### 第 3 步 —— 构建知识图谱
+文档被切块后交给 DeepSeek 抽取实体与关系，结果写入 `backend/uploads/graphs.db`，
+可在界面里浏览节点与边。
 
-&nbsp;
+### 第 4 步 —— 运行模拟
+由图谱实体生成人设，Agent 在模拟的 Twitter/Reddit 平台上自主互动，
+其行为会作为时序记忆写回图谱。
 
-MacFish团队长期招募全职/实习，如果你对多Agent应用感兴趣，欢迎投递简历至：**mirofish@shanda.com**
+### 第 5 步 —— 生成报告
+Report Agent 从知识图谱中检索并撰写分析报告（含情景树）。之后可以与任意 Agent 对话，
+也可以直接与 Report Agent 对话。
+
+### 数据存放位置
+
+| 数据 | 位置 |
+|---|---|
+| 知识图谱 | `backend/uploads/graphs.db` |
+| 上传文件与项目 | `backend/uploads/projects/` |
+| 模拟运行 | `backend/uploads/simulations/` |
+| 报告 | `backend/uploads/reports/` |
+| 运行时设置（含你的 Key） | `macfish_settings.json`（已被 gitignore） |
+
+### 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| DeepSeek 额度用尽 | 把 `LLM_BASE_URL` / `LLM_MODEL_NAME` 指到别的 OpenAI 兼容供应商 |
+| 抽取质量不理想 | 在本体生成阶段调整实体/关系类型 |
+| 模拟太慢 | 调小 `.env` 里的 `OASIS_DEFAULT_MAX_ROUNDS`（默认 10） |
+| 模拟卡在 "running" | 检查是否有残留的 runner 进程；现在运行器会检测停滞，并在启动时回收孤儿进程 |
+| 实体数看着被封顶了 | 超过读取上限的图谱会被截断，界面现在会明确提示 |
+| 想重置图谱 | 在第 1 步用「删除并重建」，或直接删掉 `backend/uploads/graphs.db` |
+
+## 🧪 测试
+
+```bash
+cd backend
+uv run pytest tests -q                              # 92 项，离线
+uv run python scripts/run_benchmark.py verify       # 39 项检查，桩驱动
+uv run python scripts/test_multi_format.py          # 11 例格式
+```
+
+```bash
+cd frontend
+node scripts/check-markdown.mjs                     # 18 例
+```
+
+以上全部不需要联网，也不会消耗 LLM 调用。
+
+## 📚 文档
+
+- [架构与运行逻辑](./docs/ARCHITECTURE.md) —— 流水线、存储布局、进程模型
+- [操作手册](./docs/MANUAL.md) —— 安装、配置、跑完一次完整推演、排查
 
 ## 📄 致谢
 
-**MacFish 得到了盛大集团的战略支持和孵化！**
-
-MacFish 的仿真引擎由 **[OASIS](https://github.com/camel-ai/oasis)** 驱动，我们衷心感谢 CAMEL-AI 团队的开源贡献！
-
-## 📈 项目统计
-
-<a href="https://www.star-history.com/#megbenben/MacFish&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&legend=top-left" />
- </picture>
-</a>
+- 模拟引擎：**[OASIS](https://github.com/camel-ai/oasis)**，感谢 CAMEL-AI 团队的开源贡献
+- 上游项目：**[MiroFish](https://github.com/666ghj/MiroFish)**

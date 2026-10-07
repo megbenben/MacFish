@@ -658,7 +658,7 @@ def _infer_graph_task(task_id: str) -> Optional[Dict[str, Any]]:
 
     任务本身会落盘（uploads/tasks/），但历史任务会被清理、文件也可能被手动删掉。
     图谱构建任务 ID 同时记在项目上，据此推断可以避免前端在「构建期间重启过」之后
-    一直转圈——这正是 OPTIMIZATION.md 1.5 里那条「只有图谱任务没有补偿」。
+    一直转圈——原先只有图谱任务没有这类补偿，prepare/status 与 generate/status 都有。
     """
     try:
         projects = ProjectManager.list_projects(limit=200)

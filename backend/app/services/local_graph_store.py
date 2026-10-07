@@ -184,7 +184,7 @@ class LocalGraphStore:
         """把老库升级到「节点身份 = (graph_id, name_key)」。
 
         历史库的 nodes 表没有 name_key 列，且因为每轮抽取都换新 uuid，
-        同一实体已经累积了成百上千行副本（见 docs/OPTIMIZATION.md 1.8）。
+        同一实体已经累积了成百上千行副本。
         """
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)").fetchall()}
         if "name_key" not in cols:
@@ -308,7 +308,7 @@ class LocalGraphStore:
 
         关键点：节点身份由 (graph_id, name) 决定，而不是调用方新生成的 uuid。
         历史实现以 uuid_ 为主键 + INSERT OR REPLACE，导致每重建一次图谱，同一实体
-        都会以新 uuid 再插一行（实测一个实体累积了 391 个副本，见 OPTIMIZATION.md 1.8）。
+        都会以新 uuid 再插一行（实测一个实体累积了 391 个副本）。
 
         返回值必须被调用方使用：若命中了已有实体，返回的是**已有 uuid**，
         调用方应当用它去连边，否则新边会指向一个不存在的节点。

@@ -1,4 +1,4 @@
-"""清理历史遗留的重复实体与重复边（对应 docs/OPTIMIZATION.md 1.8）。
+"""清理历史遗留的重复实体与重复边。
 
 背景：旧版 `LocalGraphStore.upsert_node` / `upsert_edge` 以每次抽取新生成的 uuid
 为主键，并且用的是 INSERT OR REPLACE。结果是**每点一次「构建图谱」，同一实体就会
@@ -190,7 +190,7 @@ def apply_plan(conn, plan):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="合并重复实体与重复边（OPTIMIZATION.md 1.8）")
+    ap = argparse.ArgumentParser(description="合并重复实体与重复边")
     ap.add_argument("--db", default=DEFAULT_DB, help="数据库路径")
     ap.add_argument("--graph", default="", help="只处理指定 graph_id")
     ap.add_argument("--apply", action="store_true", help="真正写入（会自动备份）")

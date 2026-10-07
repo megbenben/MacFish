@@ -1,7 +1,7 @@
 # MacFish 操作手册
 
 > 面向使用者：怎么装、怎么配、怎么跑完一次完整推演、出问题怎么查。
-> 想了解内部原理请看 [ARCHITECTURE.md](./ARCHITECTURE.md)，想参与改进请看 [OPTIMIZATION.md](./OPTIMIZATION.md)。
+> 想了解内部原理请看 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ---
 

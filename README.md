@@ -1,241 +1,208 @@
 <div align="center">
 
-<img src="./static/image/MiroFish_logo_compressed.jpeg" alt="MacFish Logo" width="75%"/>
+<img src="./static/image/MiroFish_logo_compressed.jpeg" alt="MacFish Logo" width="70%"/>
 
-<a href="https://trendshift.io/repositories/16144" target="_blank"><img src="https://trendshift.io/api/badge/repositories/16144" alt="666ghj%2FMacFish | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-简洁通用的群体智能引擎，预测万物--经过 AI 改写，可仅使用 Deepseek API 运行，已验证成功
+简洁通用的群体智能引擎，预测万物 —— 可直接使用 DeepSeek API 运行
 </br>
 <em>A Simple and Universal Swarm Intelligence Engine, Predicting Anything</em>
 </br>
-<sub>Forked from <a href="https://github.com/666ghj/MiroFish">MiroFish</a> — with DeepSeek + Local API dual-provider support</sub>
-
-
+<sub>Forked from <a href="https://github.com/666ghj/MiroFish">MiroFish</a></sub>
 
 [English](./README.md) | [中文文档](./README-ZH.md)
 
 </div>
 
+---
+
+## 🔧 What this fork changes
+
+This fork rewrites the pipeline around **one direct LLM provider** and **local storage**, and
+fixes a set of correctness problems found by auditing the original code. Everything below has
+been verified locally with an offline test suite (no LLM spend).
+
+### 1. Direct DeepSeek API — no Zep Cloud, no external graph database
+
+The knowledge graph used to depend on Zep Cloud, which meant a second vendor, a second API key,
+and a hard startup failure when that key was missing. It is now **fully local**:
+
+- Extraction runs on **DeepSeek** (`deepseek-chat`) via the plain OpenAI-compatible API
+- Graph storage is a **local SQLite file** (`backend/uploads/graphs.db`)
+- `ZEP_API_KEY` is **not required** — and is no longer part of startup validation
+- Any OpenAI-compatible endpoint works by changing `LLM_BASE_URL` / `LLM_MODEL_NAME`
+
+### 2. Multi-format document ingest
+
+Seed material is no longer limited to PDF / Markdown / TXT:
+
+| Category | Formats |
+|---|---|
+| Documents | `.pdf` (text layer, optional OCR for scanned pages), `.docx`, `.pptx`, `.xlsx`, `.xlsm` |
+| Text | `.txt`, `.md`, `.markdown`, `.csv` |
+| Images | `.png`, `.jpg`, `.jpeg`, `.heic`, `.heif`, `.tiff`, `.tif`, `.bmp`, `.webp`, `.gif` (via OCR) |
+
+- OCR uses the **local macOS Vision framework** — free, offline, no API key
+  (`uv sync --extra ocr-macos`)
+- An optional vision-LLM backend can be configured instead
+- Legacy binary Office formats (`.doc` / `.ppt` / `.xls`) are rejected with an explicit
+  "save as .docx/.pptx/.xlsx" message rather than failing silently
+- Per-file parse results are reported back, so a single bad file no longer discards the batch
+
+### 3. Engineering fixes from the code audit
+
+| Area | What changed |
+|---|---|
+| Graph duplication | Node identity is now `(graph_id, name)` instead of a fresh `uuid4()` per extraction. Repeated rebuilds used to re-insert every entity — one real database had **9336 node rows for 960 distinct names**. A repair script (`scripts/dedupe_graph.py`) migrates existing databases |
+| Simulation lifecycle | A stalled simulation no longer hangs at "running" forever; orphan child processes from a backend restart are detected and reaped; stopping a run is no longer reported as a failure |
+| Cost guardrails | Persona generation and simulation startup both warn with an estimated call count before spending anything over the configured budget |
+| Task persistence | Long-running tasks survive a backend restart instead of leaving the UI spinning |
+| Security defaults | The backend binds `127.0.0.1` by default and CORS allows only the local dev origin |
+| Test suite | `pytest` went from **0 tests to 92**, plus an offline benchmark harness (39 checks), a multi-format ingest check (11 cases), and a frontend markdown check (18 cases) |
+
 ## ⚡ Overview
 
-**MacFish** is a next-generation AI prediction engine powered by multi-agent technology. By extracting seed information from the real world (such as breaking news, policy drafts, or financial signals), it automatically constructs a high-fidelity parallel digital world. Within this space, thousands of intelligent agents with independent personalities, long-term memory, and behavioral logic freely interact and undergo social evolution. You can inject variables dynamically from a "God's-eye view" to precisely deduce future trajectories — **rehearse the future in a digital sandbox, and win decisions after countless simulations**.
+**MacFish** is a multi-agent prediction engine. By extracting seed information from the real world
+(breaking news, policy drafts, financial signals, or any documents), it builds a parallel digital
+world where many agents with independent personas and memory interact on simulated social
+platforms. You can inject variables mid-run and observe how the scenario unfolds.
 
-> You only need to: Upload seed materials (data analysis reports or interesting novel stories) and describe your prediction requirements in natural language</br>
-> MacFish will return: A detailed prediction report and a deeply interactive high-fidelity digital world
-
-### Our Vision
-
-MacFish is dedicated to creating a swarm intelligence mirror that maps reality. By capturing the collective emergence triggered by individual interactions, we break through the limitations of traditional prediction:
-
-- **At the Macro Level**: We are a rehearsal laboratory for decision-makers, allowing policies and public relations to be tested at zero risk
-- **At the Micro Level**: We are a creative sandbox for individual users — whether deducing novel endings or exploring imaginative scenarios, everything can be fun, playful, and accessible
-
-From serious predictions to playful simulations, we let every "what if" see its outcome, making it possible to predict anything.
-
-## 🌐 Live Demo
-
-Welcome to visit our online demo environment and experience a prediction simulation on trending public opinion events we've prepared for you: [mirofish-live-demo](https://666ghj.github.io/mirofish-demo/)
-
-## 📸 Screenshots
-
-<div align="center">
-<table>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图1.png" alt="Screenshot 1" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图2.png" alt="Screenshot 2" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图3.png" alt="Screenshot 3" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图4.png" alt="Screenshot 4" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./static/image/Screenshot/运行截图5.png" alt="Screenshot 5" width="100%"/></td>
-<td><img src="./static/image/Screenshot/运行截图6.png" alt="Screenshot 6" width="100%"/></td>
-</tr>
-</table>
-</div>
-
-## 🎬 Demo Videos
-
-### 1. Wuhan University Public Opinion Simulation + MacFish Project Introduction
-
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1VYBsBHEMY/" target="_blank"><img src="./static/image/武大模拟演示封面.png" alt="MacFish Demo Video" width="75%"/></a>
-
-Click the image to watch the complete demo video for prediction using BettaFish-generated "Wuhan University Public Opinion Report"
-</div>
-
-### 2. Dream of the Red Chamber Lost Ending Simulation
-
-<div align="center">
-<a href="https://www.bilibili.com/video/BV1cPk3BBExq" target="_blank"><img src="./static/image/红楼梦模拟推演封面.jpg" alt="MacFish Demo Video" width="75%"/></a>
-
-Click the image to watch MacFish's deep prediction of the lost ending based on hundreds of thousands of words from the first 80 chapters of "Dream of the Red Chamber"
-</div>
-
-> **Financial Prediction**, **Political News Prediction** and more examples coming soon...
+> **You provide:** seed documents + a prediction requirement in natural language
+> **MacFish returns:** a detailed prediction report, plus an interactive simulated world
 
 ## 🔄 Workflow
 
-1. **Graph Building**: Seed extraction & Individual/collective memory injection & GraphRAG construction
-2. **Environment Setup**: Entity relationship extraction & Persona generation & Agent configuration injection
-3. **Simulation**: Dual-platform parallel simulation & Auto-parse prediction requirements & Dynamic temporal memory updates
-4. **Report Generation**: ReportAgent with rich toolset for deep interaction with post-simulation environment
-5. **Deep Interaction**: Chat with any agent in the simulated world & Interact with ReportAgent
+1. **Graph Building** — document parsing, entity/relation extraction, GraphRAG construction
+2. **Environment Setup** — persona generation and agent configuration
+3. **Simulation** — parallel Twitter/Reddit simulation with temporal memory updates
+4. **Report Generation** — ReportAgent with a retrieval toolset
+5. **Deep Interaction** — chat with any agent in the simulated world, or with the ReportAgent
 
-## 📖 Usage Guide
+## 🚀 Quick Start
 
-### Step 1 — Create Project
-Open http://localhost:3000, enter a project name (e.g., "EV Price War Analysis"), and upload documents (PDF/Markdown/TXT) or paste text directly.
+### Prerequisites
 
-### Step 2 — Generate Ontology
-The system uses DeepSeek to automatically analyze documents and generate entity types (Person, Organization, Event, Concept, etc.) and relationship types (makes statement, competes with, influences, etc.). You can review and adjust before confirming.
+| Tool | Version | Check |
+|---|---|---|
+| **Node.js** | 18+ | `node -v` |
+| **Python** | ≥3.11, ≤3.12 | `python --version` |
+| **uv** | latest | `uv --version` |
 
-### Step 3 — Build Knowledge Graph
-- Documents are automatically chunked and sent to DeepSeek for entity/relation extraction
-- Results are stored in a local SQLite database (`backend/uploads/graphs.db`)
-- Browse extracted nodes (entities) and edges (relationships) in the UI
+> The backend needs Python ≥3.11. If your system Python is older, `uv` can install and manage
+> 3.12 for you: `uv python install 3.12`.
 
-### Step 4 — Run Simulation
-- Virtual agents are generated from knowledge graph entities
-- Configure simulation parameters (platforms, rounds, timeline)
-- Agents autonomously interact on simulated Twitter/Reddit platforms
-- Agent actions are written back to the knowledge graph as temporal memory
+### 1. Configure environment
 
-### Step 5 — Generate Report
-- Report Agent retrieves information from the knowledge graph
-- Automatically generates analysis reports (trends, opinion distribution, key events)
-- Chat with any agent or the Report Agent for deep interaction
+```bash
+cp .env.example .env
+# then edit .env and fill in your DeepSeek key
+```
 
-### Data Storage
+```env
+LLM_PROVIDER=network
+LLM_API_KEY=sk-your_deepseek_api_key
+LLM_BASE_URL=https://api.deepseek.com
+LLM_MODEL_NAME=deepseek-chat
+```
+
+> **No Zep Cloud key required.** The knowledge graph is local SQLite.
+> Any OpenAI-compatible provider works — point `LLM_BASE_URL` / `LLM_MODEL_NAME` at it.
+
+### 2. Install dependencies
+
+```bash
+npm run setup:all
+```
+
+Or step by step: `npm run setup` (Node) and `npm run setup:backend` (Python).
+
+Optional, for local OCR of images and scanned PDFs (macOS only):
+
+```bash
+cd backend && uv sync --extra ocr-macos
+```
+
+### 3. Start
+
+```bash
+npm run dev
+```
+
+- Frontend: <http://localhost:3000>
+- Backend API: <http://localhost:5001>
+
+Individually: `npm run backend` / `npm run frontend`.
+
+### Docker
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+## 📖 Usage
+
+### Step 1 — Create a project
+Open <http://localhost:3000>, upload seed documents (see the format table above) or paste text,
+and describe your prediction requirement.
+
+### Step 2 — Generate the ontology
+DeepSeek analyses the material and proposes entity types (Person, Organization, Event, Concept…)
+and relation types. Review and adjust before confirming.
+
+### Step 3 — Build the knowledge graph
+Documents are chunked and sent to DeepSeek for entity/relation extraction; results land in
+`backend/uploads/graphs.db`. Browse the nodes and edges in the UI.
+
+### Step 4 — Run the simulation
+Personas are generated from graph entities, then agents interact autonomously on simulated
+Twitter/Reddit platforms. Agent actions are written back to the graph as temporal memory.
+
+### Step 5 — Generate the report
+The Report Agent retrieves from the knowledge graph and writes an analysis report, including a
+scenario tree. You can then chat with any agent, or with the Report Agent itself.
+
+### Data storage
 
 | Data | Location |
-|------|----------|
-| Knowledge Graph | `backend/uploads/graphs.db` |
-| Uploaded Files | `backend/uploads/` |
-| Simulation Data | `backend/uploads/simulations/` |
+|---|---|
+| Knowledge graph | `backend/uploads/graphs.db` |
+| Uploaded files & projects | `backend/uploads/projects/` |
+| Simulation runs | `backend/uploads/simulations/` |
+| Reports | `backend/uploads/reports/` |
+| Runtime settings (contains your key) | `macfish_settings.json` (gitignored) |
 
 ### Troubleshooting
 
 | Problem | Solution |
-|---------|----------|
-| DeepSeek quota exhausted | Switch to another OpenAI-compatible API by changing `LLM_BASE_URL` and `LLM_MODEL_NAME` in `.env` |
-| Poor extraction quality | Refine entity/relation types during ontology generation |
-| Simulation too slow | Reduce `OASIS_DEFAULT_MAX_ROUNDS` in `.env` (default: 10) |
-| Reset graph | Delete the project and rebuild, or remove `backend/uploads/graphs.db` |
+|---|---|
+| DeepSeek quota exhausted | Point `LLM_BASE_URL` / `LLM_MODEL_NAME` at another OpenAI-compatible provider |
+| Poor extraction quality | Refine the entity/relation types during ontology generation |
+| Simulation too slow | Lower `OASIS_DEFAULT_MAX_ROUNDS` in `.env` (default 10) |
+| Simulation stuck at "running" | Check for orphaned runner processes; the runner now detects stalls and reclaims orphaned children on startup |
+| Entity count looks capped | Graphs larger than the read limit are truncated; the UI now says so explicitly |
+| Reset the graph | Rebuild with "delete and rebuild" in Step 1, or remove `backend/uploads/graphs.db` |
 
-## 🚀 Quick Start
-
-### Option 1: Source Code Deployment (Recommended)
-
-#### Prerequisites
-
-| Tool | Version | Description | Check Installation |
-|------|---------|-------------|-------------------|
-| **Node.js** | 18+ | Frontend runtime, includes npm | `node -v` |
-| **Python** | ≥3.11, ≤3.12 | Backend runtime | `python --version` |
-| **uv** | Latest | Python package manager | `uv --version` |
-
-#### 1. Configure Environment Variables
+## 🧪 Tests
 
 ```bash
-# Copy the example configuration file
-cp .env.example .env
-
-# Edit the .env file and fill in the required API keys
+cd backend
+uv run pytest tests -q                              # 92 tests, offline
+uv run python scripts/run_benchmark.py verify       # 39 checks, stub driver
+uv run python scripts/test_multi_format.py          # 11 format cases
 ```
-
-**Required Environment Variables:**
-
-```env
-# LLM API Configuration (supports any OpenAI SDK-compatible API)
-# Default: DeepSeek API — get your key at https://platform.deepseek.com/
-LLM_API_KEY=sk-your_deepseek_api_key
-LLM_BASE_URL=https://api.deepseek.com
-LLM_MODEL_NAME=deepseek-chat
-
-# Alternative: Kimi (Moonshot) API
-# LLM_BASE_URL=https://api.moonshot.cn/v1
-# LLM_MODEL_NAME=moonshot-v1-8k
-
-# Alternative: Alibaba Qwen
-# LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-# LLM_MODEL_NAME=qwen-plus
-```
-
-> **No Zep Cloud required!** Knowledge graph extraction is now powered by DeepSeek LLM with local SQLite storage — zero external graph database dependency.
-
-#### 2. Install Dependencies
 
 ```bash
-# One-click installation of all dependencies (root + frontend + backend)
-npm run setup:all
+cd frontend
+node scripts/check-markdown.mjs                     # 18 cases
 ```
 
-Or install step by step:
+All of these run without network access and without spending LLM calls.
 
-```bash
-# Install Node dependencies (root + frontend)
-npm run setup
+## 📚 Documentation
 
-# Install Python dependencies (backend, auto-creates virtual environment)
-npm run setup:backend
-```
-
-#### 3. Start Services
-
-```bash
-# Start both frontend and backend (run from project root)
-npm run dev
-```
-
-**Service URLs:**
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:5001`
-
-**Start Individually:**
-
-```bash
-npm run backend   # Start backend only
-npm run frontend  # Start frontend only
-```
-
-### Option 2: Docker Deployment
-
-```bash
-# 1. Configure environment variables (same as source deployment)
-cp .env.example .env
-
-# 2. Pull image and start
-docker compose up -d
-```
-
-Reads `.env` from root directory by default, maps ports `3000 (frontend) / 5001 (backend)`
-
-> Mirror address for faster pulling is provided as comments in `docker-compose.yml`, replace if needed.
-
-## 📬 Join the Conversation
-
-<div align="center">
-<img src="./static/image/QQ群.png" alt="QQ Group" width="60%"/>
-</div>
-
-&nbsp;
-
-The MacFish team is recruiting full-time/internship positions. If you're interested in multi-agent simulation and LLM applications, feel free to send your resume to: **mirofish@shanda.com**
+- [Architecture](./docs/ARCHITECTURE.md) — pipeline, storage layout, process model
+- [Manual](./docs/MANUAL.md) — install, configure, run a full prediction, troubleshooting
 
 ## 📄 Acknowledgments
 
-**MacFish has received strategic support and incubation from Shanda Group!**
-
-MacFish's simulation engine is powered by **[OASIS (Open Agent Social Interaction Simulations)](https://github.com/camel-ai/oasis)**, We sincerely thank the CAMEL-AI team for their open-source contributions!
-
-## 📈 Project Statistics
-
-<a href="https://www.star-history.com/#megbenben/MacFish&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=megbenben/MacFish&type=date&legend=top-left" />
- </picture>
-</a>
+- Simulation engine: **[OASIS](https://github.com/camel-ai/oasis)** — thanks to the CAMEL-AI team
+- Upstream project: **[MiroFish](https://github.com/666ghj/MiroFish)**
