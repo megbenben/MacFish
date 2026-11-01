@@ -837,6 +837,9 @@ const startStatusPolling = () => {
 }
 
 const startDetailPolling = () => {
+  if (detailTimer) return
+  // 先立刻拉一次：已完成的模拟（或分支页刷新）不该空等 3 秒才出时间线
+  fetchRunStatusDetail()
   detailTimer = setInterval(fetchRunStatusDetail, 3000)
 }
 
