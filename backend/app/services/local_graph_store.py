@@ -367,6 +367,87 @@ class LocalGraphStore:
         conn.commit()
         return node
 
+    def merge_nodes(self, graph_id: str, source_uuid: str,
+                    target_uuid: str) -> Optional[LocalNode]:
+        """人工合并两个实体：把 source 的关系与属性并入 target，然后删除 source。
+
+        合并会让两条边指向同一个 target，可能碰撞 `(graph, source, target, name, fact)`
+        唯一索引；因此这里先临时移除边索引，去重后再重建（重建失败就保留普通索引）。
+        """
+        if not source_uuid or not target_uuid or source_uuid == target_uuid:
+            raise ValueError('merge_nodes 需要两个不同的节点 uuid')
+        conn = self._get_conn()
+        source = conn.execute(
+            "SELECT * FROM nodes WHERE graph_id=? AND uuid_=?", (graph_id, source_uuid)
+        ).fetchone()
+        target = conn.execute(
+            "SELECT * FROM nodes WHERE graph_id=? AND uuid_=?", (graph_id, target_uuid)
+        ).fetchone()
+        if not source or not target:
+            return None
+
+        source_labels = json.loads(source["labels"] or "[]")
+        target_labels = json.loads(target["labels"] or "[]")
+        merged_labels = list(target_labels)
+        for label in source_labels:
+            if label not in merged_labels:
+                merged_labels.append(label)
+
+        source_attrs = json.loads(source["attributes"] or "{}")
+        target_attrs = json.loads(target["attributes"] or "{}")
+        # target 的显式属性优先；source 只补充缺失字段
+        merged_attrs = {**source_attrs, **target_attrs}
+        merged_summary = target["summary"] or source["summary"]
+
+        with conn:
+            conn.execute("DROP INDEX IF EXISTS idx_edges_identity")
+            conn.execute("DROP INDEX IF EXISTS idx_edges_identity_nonunique")
+            conn.execute(
+                "UPDATE edges SET source_node_uuid=? WHERE graph_id=? AND source_node_uuid=?",
+                (target_uuid, graph_id, source_uuid),
+            )
+            conn.execute(
+                "UPDATE edges SET target_node_uuid=? WHERE graph_id=? AND target_node_uuid=?",
+                (target_uuid, graph_id, source_uuid),
+            )
+            # 合并后产生的自环没有信息量
+            conn.execute(
+                "DELETE FROM edges WHERE graph_id=? AND source_node_uuid=target_node_uuid",
+                (graph_id,),
+            )
+            # 去重：同一 (source,target,name,fact) 只留最早一行
+            conn.execute(
+                "DELETE FROM edges WHERE graph_id=? AND rowid NOT IN ("
+                "  SELECT MIN(rowid) FROM edges WHERE graph_id=? "
+                "  GROUP BY source_node_uuid, target_node_uuid, name, fact"
+                ")",
+                (graph_id, graph_id),
+            )
+            conn.execute(
+                "UPDATE nodes SET labels=?, summary=?, attributes=? WHERE uuid_=?",
+                (json.dumps(merged_labels, ensure_ascii=False), merged_summary,
+                 json.dumps(merged_attrs, ensure_ascii=False), target_uuid),
+            )
+            conn.execute(
+                "DELETE FROM nodes WHERE uuid_=? AND graph_id=?", (source_uuid, graph_id)
+            )
+
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_identity "
+                "ON edges(graph_id, source_node_uuid, target_node_uuid, name, fact)"
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_edges_identity_nonunique "
+                "ON edges(graph_id, source_node_uuid, target_node_uuid, name, fact)"
+            )
+            conn.commit()
+            logger.warning("合并后边仍有重复，唯一索引未恢复，已降级为普通索引")
+
+        return self.get_node(target_uuid)
+
     def get_node(self, uuid_: str) -> Optional[LocalNode]:
         conn = self._get_conn()
         row = conn.execute("SELECT * FROM nodes WHERE uuid_=?", (uuid_,)).fetchone()

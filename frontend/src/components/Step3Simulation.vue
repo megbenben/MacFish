@@ -788,9 +788,52 @@ const handleStopSimulation = async () => {
 // 轮询状态
 let statusTimer = null
 let detailTimer = null
+let statusSource = null
+
+const startStatusStream = () => {
+  if (!props.simulationId || typeof EventSource === 'undefined') return false
+  try {
+    statusSource = new EventSource(
+      `/api/simulation/${encodeURIComponent(props.simulationId)}/run-status/sse`
+    )
+  } catch (err) {
+    console.warn('SSE unavailable, falling back to polling:', err)
+    statusSource = null
+    return false
+  }
+
+  statusSource.onmessage = (event) => {
+    try {
+      handleRunStatus(JSON.parse(event.data))
+    } catch (err) {
+      console.warn('Bad SSE run-status payload:', err)
+    }
+  }
+  statusSource.addEventListener('done', () => {
+    if (statusSource) {
+      statusSource.close()
+      statusSource = null
+    }
+  })
+  statusSource.onerror = () => {
+    if (statusSource) {
+      statusSource.close()
+      statusSource = null
+    }
+    if (!statusTimer && phase.value === 1) {
+      fetchRunStatus()
+      statusTimer = setInterval(fetchRunStatus, 2000)
+    }
+  }
+  return true
+}
 
 const startStatusPolling = () => {
-  statusTimer = setInterval(fetchRunStatus, 2000)
+  if (statusTimer || statusSource) return
+  if (!startStatusStream()) {
+    fetchRunStatus()
+    statusTimer = setInterval(fetchRunStatus, 2000)
+  }
 }
 
 const startDetailPolling = () => {
@@ -798,6 +841,10 @@ const startDetailPolling = () => {
 }
 
 const stopPolling = () => {
+  if (statusSource) {
+    statusSource.close()
+    statusSource = null
+  }
   if (statusTimer) {
     clearInterval(statusTimer)
     statusTimer = null
@@ -812,56 +859,52 @@ const stopPolling = () => {
 const prevTwitterRound = ref(0)
 const prevRedditRound = ref(0)
 
+const handleRunStatus = (data) => {
+  runStatus.value = data
+
+  if (data.twitter_current_round > prevTwitterRound.value) {
+    addLog(`[Plaza] R${data.twitter_current_round}/${data.total_rounds} | T:${data.twitter_simulated_hours || 0}h | A:${data.twitter_actions_count}`)
+    prevTwitterRound.value = data.twitter_current_round
+  }
+
+  if (data.reddit_current_round > prevRedditRound.value) {
+    addLog(`[Community] R${data.reddit_current_round}/${data.total_rounds} | T:${data.reddit_simulated_hours || 0}h | A:${data.reddit_actions_count}`)
+    prevRedditRound.value = data.reddit_current_round
+  }
+
+  const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped'
+  const platformsCompleted = checkPlatformsCompleted(data)
+
+  if (isCompleted || platformsCompleted) {
+    if (platformsCompleted && !isCompleted) {
+      addLog(t('log.allPlatformsCompleted'))
+    }
+    addLog(t('log.simCompleted'))
+    phase.value = 2
+    stopPolling()
+    emit('update-status', 'completed')
+    return
+  }
+
+  if (data.runner_status === 'failed' || data.runner_status === 'stalled') {
+    const isStalled = data.runner_status === 'stalled'
+    const detail = data.error || t('common.unknownError')
+    addLog(t(isStalled ? 'log.simStalled' : 'log.simFailed', { error: detail }))
+    startError.value = detail
+    phase.value = 3
+    stopPolling()
+    emit('update-status', 'error')
+  }
+}
+
 const fetchRunStatus = async () => {
   if (!props.simulationId) return
   
   try {
     const res = await getRunStatus(props.simulationId)
-    
+
     if (res.success && res.data) {
-      const data = res.data
-      
-      runStatus.value = data
-      
-      // 分别检测各平台的轮次变化并输出日志
-      if (data.twitter_current_round > prevTwitterRound.value) {
-        addLog(`[Plaza] R${data.twitter_current_round}/${data.total_rounds} | T:${data.twitter_simulated_hours || 0}h | A:${data.twitter_actions_count}`)
-        prevTwitterRound.value = data.twitter_current_round
-      }
-      
-      if (data.reddit_current_round > prevRedditRound.value) {
-        addLog(`[Community] R${data.reddit_current_round}/${data.total_rounds} | T:${data.reddit_simulated_hours || 0}h | A:${data.reddit_actions_count}`)
-        prevRedditRound.value = data.reddit_current_round
-      }
-      
-      // 检测模拟是否已结束（通过 runner_status 或平台完成状态判断）
-      const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped'
-
-      // 额外检查：如果后端还没来得及更新 runner_status，但平台已经报告完成
-      // 通过检测 twitter_completed 和 reddit_completed 状态判断
-      const platformsCompleted = checkPlatformsCompleted(data)
-
-      if (isCompleted || platformsCompleted) {
-        if (platformsCompleted && !isCompleted) {
-          addLog(t('log.allPlatformsCompleted'))
-        }
-        addLog(t('log.simCompleted'))
-        phase.value = 2
-        stopPolling()
-        emit('update-status', 'completed')
-        return
-      }
-
-      // 失败 / 停滞同样要收敛，否则页面永远停在「运行中」，轮询也永远不会停
-      if (data.runner_status === 'failed' || data.runner_status === 'stalled') {
-        const isStalled = data.runner_status === 'stalled'
-        const detail = data.error || t('common.unknownError')
-        addLog(t(isStalled ? 'log.simStalled' : 'log.simFailed', { error: detail }))
-        startError.value = detail
-        phase.value = 3
-        stopPolling()
-        emit('update-status', 'error')
-      }
+      handleRunStatus(res.data)
     }
   } catch (err) {
     console.warn('获取运行状态失败:', err)

@@ -47,7 +47,7 @@
 | 亮点 | 说明 |
 |---|---|
 | **图谱去重** | 节点身份从「每次抽取生成新 `uuid4()`」改为 `(graph_id, name)`。反复重建会把每个实体重新插入一遍——实测有个库**9336 行节点实际只有 960 个不同名字**（光 `SAP` 就有 440 份副本）。附迁移脚本 `scripts/dedupe_graph.py` 修复历史库，重建也不再累积 |
-| **可离线验证** | `pytest` 从 **0 个测试变成 132 个**，另有回测框架（桩驱动、39 项检查）、多格式摄入检查（11 例）、前端 Markdown 检查（18 例）。全部**不需要联网，也不消耗任何 LLM 调用** |
+| **可离线验证** | `pytest` 从 **0 个测试变成 133 个**，另有回测框架（桩驱动、39 项检查）、多格式摄入检查（11 例）、前端 Markdown 检查（18 例）。全部**不需要联网，也不消耗任何 LLM 调用** |
 | **成本护栏** | 人设生成与模拟启动前都会先预估 LLM 调用次数，超出设置的预算上限时停下来等确认，而不是默默发出成千上万次调用 |
 | **可复现的运行** | 每份报告都带 run manifest（提交号、输入、模型），报告内含情景树而不只是单一叙述 |
 | **健壮的模拟生命周期** | 卡住的模拟会被检测出来，不再永远停在 "running"；后端重启遗留的孤儿子进程会在启动时回收；主动停止不再被误报成失败 |
@@ -119,6 +119,18 @@
 
 > 分支是「同一初始条件 + 指定轮次注入差异事件」的重跑，不是 OASIS 中途状态快照。
 > 这样可复现、无需改动 OASIS 内部状态；代价是分支会从第 0 轮重新消耗 LLM 调用。
+
+### 八、实时通道与图谱编辑（P1-6 / P1-7）
+
+- **报告日志 SSE**：`GET /api/report/<id>/agent-log/sse?from_line=N` 先回放已有日志，
+  再每秒推送增量；完成/失败时发送 `event: done`。
+- **模拟状态 SSE**：`GET /api/simulation/<id>/run-status/sse` 每秒推送 `run_state`。
+- 前端报告页与模拟运行页优先使用 `EventSource`；网络或代理不支持时自动退回原来的轮询，
+  功能不降级。控制台日志与动作明细仍保留轮询（数据量大，SSE 收益有限）。
+- **图谱实体合并**：节点详情面板新增「合并到另一个实体」，选择 target 后确认。
+  关系与属性并入 target，source 被删除，重复边自动去重。
+  - API：`POST /api/graph/<graph_id>/merge`，body `{source_uuid, target_uuid}`
+  - 合并不可撤销；UI 会明确提示。
 
 ## 🏗 运行逻辑
 
@@ -237,7 +249,7 @@ docker compose up -d
 
 ```bash
 cd backend
-uv run pytest tests -q                              # 132 项，离线
+uv run pytest tests -q                              # 133 项，离线
 uv run python scripts/run_benchmark.py verify       # 39 项检查，桩驱动
 uv run python scripts/test_multi_format.py          # 11 例格式
 ```

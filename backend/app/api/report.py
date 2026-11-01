@@ -4,10 +4,12 @@ Report API路由
 """
 
 import io
+import json
 import os
+import time
 import traceback
 import threading
-from flask import request, jsonify, send_file
+from flask import request, jsonify, send_file, Response, stream_with_context
 
 from . import report_bp
 from ..config import Config
@@ -903,6 +905,71 @@ def stream_agent_log(report_id: str):
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+@report_bp.route('/<report_id>/agent-log/sse', methods=['GET'])
+def sse_agent_log(report_id: str):
+    """Agent 日志的 SSE 流：先回放 from_line 之后的已有日志，再每秒推送增量。
+
+    前端用 EventSource 订阅；代理不支持 SSE 时会自动退回轮询。
+    报告完成/失败且没有新日志时发送 `event: done` 并关闭。
+    """
+    report = ReportManager.get_report(report_id)
+    if not report:
+        return jsonify({
+            "success": False,
+            "error": t('api.reportNotFound', id=report_id)
+        }), 404
+
+    from_line = request.args.get('from_line', 0, type=int) or 0
+
+    def generate():
+        last_line = max(0, from_line)
+        started = time.monotonic()
+        idle_ticks = 0
+        while True:
+            try:
+                data = ReportManager.get_agent_log(report_id, from_line=last_line)
+                logs = data.get('logs') or []
+                for log in logs:
+                    yield f"data: {json.dumps(log, ensure_ascii=False)}\n\n"
+                last_line += len(logs)
+
+                current = ReportManager.get_report(report_id)
+                terminal = current is None or current.status in (
+                    ReportStatus.COMPLETED, ReportStatus.FAILED
+                )
+                if terminal and not logs:
+                    yield "event: done\ndata: {}\n\n"
+                    break
+
+                if logs:
+                    idle_ticks = 0
+                else:
+                    idle_ticks += 1
+                    if idle_ticks % 15 == 0:
+                        yield ": ping\n\n"
+
+                # 防御：异常情况下别把连接挂一辈子
+                if time.monotonic() - started > 2 * 3600:
+                    yield "event: done\ndata: {}\n\n"
+                    break
+            except GeneratorExit:
+                break
+            except Exception as exc:
+                logger.warning(f"SSE 推送报告日志失败: {exc}")
+                break
+            time.sleep(1)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 # ============== 控制台日志接口 ==============

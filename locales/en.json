@@ -340,6 +340,11 @@
     "selectAgentFirst": "Please select a simulated individual first"
   },
   "graph": {
+    "mergeStart": "Merge into another entity",
+    "mergeTitle": "Merge entities",
+    "mergePickTarget": "Click another node in the graph",
+    "mergeHint": "The source's relations and attributes move into the target; the source is deleted. This cannot be undone.",
+    "mergeConfirm": "Confirm merge",
     "panelTitle": "Graph Relationship Visualization",
     "refreshGraph": "Refresh Graph",
     "graphMemoryRealtime": "GraphRAG short/long-term memory updating in real-time",
@@ -393,6 +398,8 @@
     "requireSimulationRequirement": "Please provide a simulation requirement (simulation_requirement)",
     "requireFileUpload": "Please upload at least one document file",
     "noDocProcessed": "No documents were processed successfully. Please check file formats.",
+    "requireMergeNodes": "source_uuid and target_uuid are required",
+    "mergeSameNode": "A node cannot be merged into itself",
     "requireProjectId": "Please provide project_id",
     "configError": "Configuration error: {details}",
     "zepApiKeyMissing": "ZEP_API_KEY not configured",

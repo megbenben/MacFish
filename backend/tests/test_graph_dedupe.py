@@ -225,3 +225,40 @@ def test_repair_script_cleans_legacy_db(tmp_path):
 
     # 清理完就能建起唯一索引
     conn.execute("CREATE UNIQUE INDEX idx_nodes_graph_name_key ON nodes(graph_id, name_key)")
+
+
+def test_merge_nodes_repoints_edges_dedupes_and_deletes_source(store):
+    for uuid, name, labels, attrs in (
+        ("a", "A", ["Organization"], {"x": 1}),
+        ("b", "B", ["Concept"], {"y": 2}),
+        ("c", "C", ["Concept"], {}),
+    ):
+        store.upsert_node(LocalNode(uuid_=uuid, name=name, labels=labels,
+                                    summary=name, attributes=attrs, graph_id="g"))
+    store.upsert_edge(LocalEdge(uuid_="e1", name="REL", fact="A-C",
+                                source_node_uuid="a", target_node_uuid="c",
+                                attributes={}, graph_id="g"))
+    store.upsert_edge(LocalEdge(uuid_="e2", name="REL", fact="B-C",
+                                source_node_uuid="b", target_node_uuid="c",
+                                attributes={}, graph_id="g"))
+    store.upsert_edge(LocalEdge(uuid_="e3", name="REL", fact="C-A",
+                                source_node_uuid="c", target_node_uuid="a",
+                                attributes={}, graph_id="g"))
+    store.upsert_edge(LocalEdge(uuid_="e4", name="REL", fact="A-B",
+                                source_node_uuid="a", target_node_uuid="b",
+                                attributes={}, graph_id="g"))
+
+    merged = store.merge_nodes("g", "a", "b")
+    assert merged is not None
+    assert merged.uuid_ == "b"
+    assert set(merged.labels) == {"Concept", "Organization"}
+    assert merged.attributes == {"x": 1, "y": 2}
+    assert store.get_node("a") is None
+
+    edges = store.get_edges_by_graph("g", limit=100)
+    # A->C 与 B->C 的 fact 不同，不会消失；C->A 变成 C->B；A->B 变成自环被删
+    facts = {(e.source_node_uuid, e.target_node_uuid, e.fact) for e in edges}
+    assert ("b", "c", "A-C") in facts
+    assert ("b", "c", "B-C") in facts
+    assert ("c", "b", "C-A") in facts
+    assert all(e.source_node_uuid != e.target_node_uuid for e in edges)

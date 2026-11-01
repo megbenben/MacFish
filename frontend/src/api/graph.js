@@ -85,3 +85,16 @@ export function getProject(projectId) {
 export function updateOntology(data) {
   return service.put('/api/graph/ontology', data)
 }
+
+/**
+ * 合并两个图谱实体（source 并入 target，source 被删除）
+ * @param {string} graphId
+ * @param {string} sourceUuid
+ * @param {string} targetUuid
+ */
+export function mergeGraphNodes(graphId, sourceUuid, targetUuid) {
+  return service.post(`/api/graph/${graphId}/merge`, {
+    source_uuid: sourceUuid,
+    target_uuid: targetUuid
+  })
+}

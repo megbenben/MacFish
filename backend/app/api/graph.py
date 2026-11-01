@@ -821,6 +821,51 @@ def list_tasks():
 
 # ============== 图谱数据接口 ==============
 
+@graph_bp.route('/<graph_id>/merge', methods=['POST'])
+def merge_graph_nodes(graph_id: str):
+    """人工合并两个实体：关系与属性并入 target，删除 source。
+
+    请求 JSON：{"source_uuid": "...", "target_uuid": "..."}
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        source_uuid = str(data.get('source_uuid') or '').strip()
+        target_uuid = str(data.get('target_uuid') or '').strip()
+        if not source_uuid or not target_uuid:
+            return jsonify({"success": False, "error": t('api.requireMergeNodes')}), 400
+        if source_uuid == target_uuid:
+            return jsonify({"success": False, "error": t('api.mergeSameNode')}), 400
+
+        store = LocalGraphStore.get_instance()
+        merged = store.merge_nodes(graph_id, source_uuid, target_uuid)
+        if merged is None:
+            return jsonify({"success": False, "error": t('api.entityNotFound', id=f'{source_uuid}/{target_uuid}')}), 404
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "graph_id": graph_id,
+                "merged_into": merged.uuid_,
+                "node": {
+                    "uuid": merged.uuid_,
+                    "name": merged.name,
+                    "labels": merged.labels,
+                    "summary": merged.summary,
+                    "attributes": merged.attributes,
+                },
+            },
+        })
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.error(f"合并图谱节点失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
 @graph_bp.route('/data/<graph_id>', methods=['GET'])
 def get_graph_data(graph_id: str):
     """

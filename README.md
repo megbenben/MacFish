@@ -48,7 +48,7 @@ This fork was audited end to end and rebuilt around verifiable behaviour rather 
 | Highlight | Detail |
 |---|---|
 | **Graph de-duplication** | Node identity is now `(graph_id, name)` instead of a fresh `uuid4()` per extraction. Repeated rebuilds used to re-insert every entity — one real database had **9336 node rows for 960 distinct names** (`SAP` alone had 440 copies). A migration script (`scripts/dedupe_graph.py`) repairs existing databases, and rebuilds no longer accumulate |
-| **Verifiable offline** | `pytest` went from **0 to 132 tests**, plus a backtest harness (39 checks with a stub driver), a multi-format ingest check (11 cases) and a frontend markdown check (18 cases). All of it runs **without network access and without spending a single LLM call** |
+| **Verifiable offline** | `pytest` went from **0 to 133 tests**, plus a backtest harness (39 checks with a stub driver), a multi-format ingest check (11 cases) and a frontend markdown check (18 cases). All of it runs **without network access and without spending a single LLM call** |
 | **Cost guardrails** | Both persona generation and simulation startup estimate their LLM call count first and stop for confirmation when the configured budget is exceeded — instead of silently issuing thousands of calls |
 | **Reproducible runs** | Every report carries a run manifest (commit, inputs, model), and reports include a scenario tree rather than a single flat narrative |
 | **Robust simulation lifecycle** | A stalled run is detected instead of hanging at "running" forever; orphaned runner processes from a backend restart are reclaimed on startup; stopping a run is no longer reported as a failure |
@@ -125,6 +125,19 @@ deterministic local result when the model or key is unavailable.
 > A fork is a rerun from the same initial conditions with a different event injected at round N,
 > not an OASIS mid-run state snapshot. It is reproducible and needs no OASIS internals; the cost is
 > that the branch spends LLM calls from round 0 again.
+
+### 8. Real-time streams and graph editing (P1-6 / P1-7)
+
+- **Report log SSE**: `GET /api/report/<id>/agent-log/sse?from_line=N` replays existing logs,
+  then pushes new entries every second and emits `event: done` on completion/failure.
+- **Simulation status SSE**: `GET /api/simulation/<id>/run-status/sse` pushes `run_state` every
+  second. The report and run pages prefer `EventSource` and automatically fall back to polling
+  when SSE is unavailable (console logs and action details still poll — high volume, low benefit).
+- **Graph entity merge**: the node detail panel gains "Merge into another entity"; pick a target
+  and confirm. Relations and attributes move into the target, the source is deleted, and duplicate
+  edges are collapsed.
+  - API: `POST /api/graph/<graph_id>/merge` with `{source_uuid, target_uuid}`
+  - Merging is irreversible; the UI says so.
 
 ## 🏗 How it works
 
@@ -246,7 +259,7 @@ docker compose up -d
 
 ```bash
 cd backend
-uv run pytest tests -q                              # 132 tests, offline
+uv run pytest tests -q                              # 133 tests, offline
 uv run python scripts/run_benchmark.py verify       # 39 checks, stub driver
 uv run python scripts/test_multi_format.py          # 11 format cases
 ```

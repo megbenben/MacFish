@@ -340,6 +340,11 @@
     "selectAgentFirst": "请先选择一个模拟个体"
   },
   "graph": {
+    "mergeStart": "合并到另一个实体",
+    "mergeTitle": "合并实体",
+    "mergePickTarget": "点击图中另一个节点",
+    "mergeHint": "source 的关系与属性会并入 target，source 将被删除；不可撤销。",
+    "mergeConfirm": "确认合并",
     "panelTitle": "Graph Relationship Visualization",
     "refreshGraph": "刷新图谱",
     "graphMemoryRealtime": "GraphRAG长短期记忆实时更新中",
@@ -393,6 +398,8 @@
     "requireSimulationRequirement": "请提供模拟需求描述 (simulation_requirement)",
     "requireFileUpload": "请至少上传一个文档文件",
     "noDocProcessed": "没有成功处理任何文档，请检查文件格式",
+    "requireMergeNodes": "请提供 source_uuid 与 target_uuid",
+    "mergeSameNode": "不能把节点合并到它自己",
     "requireProjectId": "请提供 project_id",
     "configError": "配置错误: {details}",
     "zepApiKeyMissing": "ZEP_API_KEY未配置",

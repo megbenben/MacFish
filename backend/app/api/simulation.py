@@ -5,8 +5,9 @@ Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化�
 
 import json
 import os
+import time
 import traceback
-from flask import request, jsonify, send_file
+from flask import request, jsonify, send_file, Response, stream_with_context
 
 from . import simulation_bp
 from ..config import Config
@@ -2089,6 +2090,58 @@ def get_run_status(simulation_id: str):
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+@simulation_bp.route('/<simulation_id>/run-status/sse', methods=['GET'])
+def sse_run_status(simulation_id: str):
+    """运行状态 SSE：每秒推送一次 run_state，终态发送 done。
+
+    前端 Step3 优先用它替代 2 秒轮询；EventSource 不可用时自动退回轮询。
+    """
+    state = SimulationRunner.get_run_state(simulation_id)
+    if state is None:
+        return jsonify({
+            "success": False,
+            "error": t('api.simulationNotFound', id=simulation_id)
+        }), 404
+
+    def generate():
+        started = time.monotonic()
+        idle_ticks = 0
+        while True:
+            try:
+                current = SimulationRunner.get_run_state(simulation_id)
+                if current is None:
+                    yield "event: done\ndata: {}\n\n"
+                    break
+                payload = current.to_dict()
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                status = getattr(current.runner_status, 'value', current.runner_status)
+                if status in ('completed', 'stopped', 'failed', 'stalled'):
+                    yield "event: done\ndata: {}\n\n"
+                    break
+                idle_ticks += 1
+                if idle_ticks % 15 == 0:
+                    yield ": ping\n\n"
+                if time.monotonic() - started > 6 * 3600:
+                    yield "event: done\ndata: {}\n\n"
+                    break
+            except GeneratorExit:
+                break
+            except Exception as exc:
+                logger.warning(f"SSE 推送模拟状态失败: {exc}")
+                break
+            time.sleep(1)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        },
+    )
 
 
 @simulation_bp.route('/<simulation_id>/run-status/detail', methods=['GET'])

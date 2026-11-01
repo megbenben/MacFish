@@ -2047,9 +2047,103 @@ const onCitationClick = (event) => {
   }, 1600)
 }
 
-// Polling
+// Polling / SSE
 let agentLogTimer = null
 let consoleLogTimer = null
+let agentLogSource = null
+
+const handleAgentLogEntry = (log) => {
+  agentLogs.value.push(log)
+
+  if (log.action === 'planning_complete' && log.details?.outline) {
+    reportOutline.value = log.details.outline
+  }
+
+  if (log.action === 'section_start') {
+    currentSectionIndex.value = log.section_index
+  }
+
+  if (log.action === 'section_complete') {
+    if (log.details?.content) {
+      generatedSections.value[log.section_index] = log.details.content
+      expandedContent.value.add(log.section_index - 1)
+      currentSectionIndex.value = null
+    }
+  }
+
+  if (log.action === 'report_complete') {
+    isComplete.value = true
+    currentSectionIndex.value = null
+    emit('update-status', 'completed')
+    stopPolling()
+    loadReportMeta()
+  }
+
+  if (log.action === 'error') {
+    reportError.value = log.details?.error || log.details?.message || t('common.unknownError')
+    isFailed.value = true
+    currentSectionIndex.value = null
+    addLog(t('log.reportFailed', { error: reportError.value }))
+    emit('update-status', 'error')
+    stopPolling()
+  }
+
+  if (log.action === 'report_start') {
+    startTime.value = new Date(log.timestamp)
+  }
+}
+
+const scrollAgentLog = () => {
+  nextTick(() => {
+    if (rightPanel.value) {
+      rightPanel.value.scrollTop = isComplete.value ? 0 : rightPanel.value.scrollHeight
+    }
+  })
+}
+
+const startAgentLogStream = () => {
+  if (!props.reportId || typeof EventSource === 'undefined') return false
+  try {
+    agentLogSource = new EventSource(
+      `/api/report/${encodeURIComponent(props.reportId)}/agent-log/sse?from_line=${agentLogLine.value}`
+    )
+  } catch (err) {
+    console.warn('SSE unavailable, falling back to polling:', err)
+    agentLogSource = null
+    return false
+  }
+
+  agentLogSource.onmessage = (event) => {
+    try {
+      const log = JSON.parse(event.data)
+      handleAgentLogEntry(log)
+      agentLogLine.value += 1
+      scrollAgentLog()
+    } catch (err) {
+      console.warn('Bad SSE log payload:', err)
+    }
+  }
+
+  agentLogSource.addEventListener('done', () => {
+    if (agentLogSource) {
+      agentLogSource.close()
+      agentLogSource = null
+    }
+  })
+
+  agentLogSource.onerror = () => {
+    // 网络/代理不支持 SSE 时退回轮询，保证功能不变
+    if (agentLogSource) {
+      agentLogSource.close()
+      agentLogSource = null
+    }
+    if (!agentLogTimer && !isComplete.value && !isFailed.value) {
+      fetchAgentLog()
+      agentLogTimer = setInterval(fetchAgentLog, 2000)
+    }
+  }
+  return true
+}
 
 const fetchAgentLog = async () => {
   if (!props.reportId) return
@@ -2061,64 +2155,9 @@ const fetchAgentLog = async () => {
       const newLogs = res.data.logs || []
       
       if (newLogs.length > 0) {
-        newLogs.forEach(log => {
-          agentLogs.value.push(log)
-          
-          if (log.action === 'planning_complete' && log.details?.outline) {
-            reportOutline.value = log.details.outline
-          }
-          
-          if (log.action === 'section_start') {
-            currentSectionIndex.value = log.section_index
-          }
-
-          // section_complete - 章节生成完成
-          if (log.action === 'section_complete') {
-            if (log.details?.content) {
-              generatedSections.value[log.section_index] = log.details.content
-              // 自动展开刚生成的章节
-              expandedContent.value.add(log.section_index - 1)
-              currentSectionIndex.value = null
-            }
-          }
-          
-          if (log.action === 'report_complete') {
-            isComplete.value = true
-            currentSectionIndex.value = null  // 确保清除 loading 状态
-            emit('update-status', 'completed')
-            stopPolling()
-            loadReportMeta()
-            // 滚动逻辑统一在循环结束后的 nextTick 中处理
-          }
-
-          // 后端失败时会写一条 action="error" 的日志。此前只认 report_complete，
-          // 于是失败后轮询永不停止、页面永远停在「生成中」，用户只能靠肉眼找红字。
-          if (log.action === 'error') {
-            reportError.value = log.details?.error || log.details?.message || t('common.unknownError')
-            isFailed.value = true
-            currentSectionIndex.value = null
-            addLog(t('log.reportFailed', { error: reportError.value }))
-            emit('update-status', 'error')
-            stopPolling()
-          }
-          
-          if (log.action === 'report_start') {
-            startTime.value = new Date(log.timestamp)
-          }
-        })
-        
+        newLogs.forEach(handleAgentLogEntry)
         agentLogLine.value = res.data.from_line + newLogs.length
-        
-        nextTick(() => {
-          if (rightPanel.value) {
-            // 如果任务已完成，滚动到顶部；否则滚动到底部跟随最新日志
-            if (isComplete.value) {
-              rightPanel.value.scrollTop = 0
-            } else {
-              rightPanel.value.scrollTop = rightPanel.value.scrollHeight
-            }
-          }
-        })
+        scrollAgentLog()
       }
     }
   } catch (err) {
@@ -2197,16 +2236,24 @@ const fetchConsoleLog = async () => {
 }
 
 const startPolling = () => {
-  if (agentLogTimer || consoleLogTimer) return
-  
-  fetchAgentLog()
-  fetchConsoleLog()
-  
-  agentLogTimer = setInterval(fetchAgentLog, 2000)
-  consoleLogTimer = setInterval(fetchConsoleLog, 1500)
+  // Agent 日志优先走 SSE（一次性回放 + 增量推送）；失败自动退回 2s 轮询。
+  if (!agentLogTimer && !agentLogSource) {
+    if (!startAgentLogStream()) {
+      fetchAgentLog()
+      agentLogTimer = setInterval(fetchAgentLog, 2000)
+    }
+  }
+  if (!consoleLogTimer) {
+    fetchConsoleLog()
+    consoleLogTimer = setInterval(fetchConsoleLog, 1500)
+  }
 }
 
 const stopPolling = () => {
+  if (agentLogSource) {
+    agentLogSource.close()
+    agentLogSource = null
+  }
   if (agentLogTimer) {
     clearInterval(agentLogTimer)
     agentLogTimer = null
@@ -2232,6 +2279,7 @@ onUnmounted(() => {
 
 watch(() => props.reportId, (newId) => {
   if (newId) {
+    stopPolling()
     agentLogs.value = []
     consoleLogs.value = []
     agentLogLine.value = 0

@@ -99,6 +99,12 @@
                 </span>
               </div>
             </div>
+
+            <div class="detail-section" v-if="graphData?.graph_id && !mergeSource">
+              <button class="merge-start-btn" @click="startMerge">
+                {{ $t('graph.mergeStart') }}
+              </button>
+            </div>
           </div>
           
           <!-- 边详情 -->
@@ -198,8 +204,28 @@
             </template>
           </div>
         </div>
+
+        <!-- 合并实体面板 -->
+        <div v-if="mergeSource" class="merge-panel">
+          <div class="merge-title">{{ $t('graph.mergeTitle') }}</div>
+          <div class="merge-body">
+            <span class="merge-node source">{{ mergeSource.name }}</span>
+            <span class="merge-arrow">→</span>
+            <span class="merge-node target" :class="{ empty: !mergeTarget }">
+              {{ mergeTarget?.name || $t('graph.mergePickTarget') }}
+            </span>
+          </div>
+          <div class="merge-hint">{{ $t('graph.mergeHint') }}</div>
+          <div v-if="mergeError" class="merge-error">{{ mergeError }}</div>
+          <div class="merge-actions">
+            <button class="merge-cancel" :disabled="merging" @click="cancelMerge">{{ $t('common.cancel') }}</button>
+            <button class="merge-confirm" :disabled="!mergeTarget || merging" @click="confirmMerge">
+              {{ merging ? $t('common.saving') : $t('graph.mergeConfirm') }}
+            </button>
+          </div>
+        </div>
       </div>
-      
+
       <!-- 加载状态 -->
       <div v-else-if="loading" class="graph-state">
         <div class="loading-spinner"></div>
@@ -238,6 +264,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { mergeGraphNodes } from '../api/graph'
 
 const props = defineProps({
   graphData: Object,
@@ -319,6 +346,47 @@ const formatDateTime = (dateStr) => {
 const closeDetailPanel = () => {
   selectedItem.value = null
   expandedSelfLoops.value = new Set() // 重置展开状态
+}
+
+// --- 人工合并实体 ---
+const mergeSource = ref(null)
+const mergeTarget = ref(null)
+const merging = ref(false)
+const mergeError = ref('')
+
+const startMerge = () => {
+  if (selectedItem.value?.type !== 'node') return
+  mergeSource.value = selectedItem.value.data
+  mergeTarget.value = null
+  mergeError.value = ''
+}
+
+const cancelMerge = () => {
+  mergeSource.value = null
+  mergeTarget.value = null
+  mergeError.value = ''
+  merging.value = false
+}
+
+const confirmMerge = async () => {
+  const graphId = props.graphData?.graph_id
+  if (!graphId || !mergeSource.value || !mergeTarget.value || merging.value) return
+  merging.value = true
+  mergeError.value = ''
+  try {
+    const res = await mergeGraphNodes(graphId, mergeSource.value.uuid, mergeTarget.value.uuid)
+    if (res.success) {
+      cancelMerge()
+      selectedItem.value = null
+      emit('refresh')
+    } else {
+      mergeError.value = res.error || '合并失败'
+    }
+  } catch (err) {
+    mergeError.value = err.message || '合并失败'
+  } finally {
+    merging.value = false
+  }
 }
 
 let currentSimulation = null
@@ -733,6 +801,14 @@ const renderGraph = () => {
     )
     .on('click', (event, d) => {
       event.stopPropagation()
+      // 合并模式：第一次点击的节点是 source，下一次点击选择 target
+      if (mergeSource.value) {
+        if (d.rawData.uuid !== mergeSource.value.uuid) {
+          mergeTarget.value = d.rawData
+          d3.select(event.target).attr('stroke', '#0F766E').attr('stroke-width', 4)
+        }
+        return
+      }
       // 重置所有节点样式
       node.attr('stroke', '#fff').attr('stroke-width', 2.5)
       linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
@@ -1079,6 +1155,111 @@ input:checked + .slider:before {
 .toggle-label {
   font-size: 12px;
   color: #666;
+}
+
+/* Merge panel */
+.merge-start-btn {
+  width: 100%;
+  font-size: 12px;
+  padding: 7px 10px;
+  border: 1px solid #0F766E;
+  background: #F0FDFA;
+  color: #0F766E;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.merge-start-btn:hover {
+  background: #CCFBF1;
+}
+
+.merge-panel {
+  position: absolute;
+  top: 60px;
+  right: 20px;
+  width: 320px;
+  background: #FFFFFF;
+  border: 1px solid #0F766E;
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(15, 118, 110, 0.18);
+  padding: 14px 16px;
+  z-index: 30;
+}
+
+.merge-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0F766E;
+  margin-bottom: 10px;
+}
+
+.merge-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.merge-node {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: #F3F4F6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merge-node.source { border-left: 3px solid #B91C1C; }
+.merge-node.target { border-left: 3px solid #0F766E; }
+.merge-node.empty { color: #9CA3AF; }
+
+.merge-arrow { color: #6B7280; }
+
+.merge-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #6B7280;
+  line-height: 1.5;
+}
+
+.merge-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #B91C1C;
+}
+
+.merge-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.merge-cancel,
+.merge-confirm {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.merge-cancel {
+  background: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  color: #374151;
+}
+
+.merge-confirm {
+  background: #0F766E;
+  border: 1px solid #0F766E;
+  color: #FFFFFF;
+}
+
+.merge-confirm:disabled,
+.merge-cancel:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* Detail Panel - Right Side */
