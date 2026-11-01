@@ -21,6 +21,7 @@
       </div>
 
       <div class="header-right">
+        <ArtifactLinks variant="light" />
         <LanguageSwitcher />
         <button class="settings-btn" @click="showSettings = true" :title="$t('settings.title')">
           <span class="gear-icon">⚙</span>
@@ -67,6 +68,7 @@
           :buildProgress="buildProgress"
           :graphData="graphData"
           :systemLogs="systemLogs"
+          @ontology-updated="handleOntologyUpdated"
         />
       </div>
     </main>
@@ -106,6 +108,7 @@ import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData }
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
 import SettingsPanel from '../components/SettingsPanel.vue'
+import ArtifactLinks from '../components/ArtifactLinks.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -126,6 +129,13 @@ const error = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
 const currentPhase = ref(-1) // -1: Upload, 0: Ontology, 1: Build, 2: Complete
+const handleOntologyUpdated = ({ ontology, needs_rebuild }) => {
+  if (projectData.value && ontology) {
+    projectData.value = { ...projectData.value, ontology }
+  }
+  addLog(t('log.ontologyUpdated') + (needs_rebuild ? ' ' + t('log.ontologyNeedsRebuild') : ''))
+}
+
 const ontologyProgress = ref(null)
 const buildProgress = ref(null)
 const systemLogs = ref([])
@@ -685,5 +695,12 @@ onUnmounted(() => {
 
 .rebuild-btn.danger:hover {
   background: #8E2E25;
+}
+
+/* 中等宽度时只保留神器入口的图标，避免和居中的视图切换器重叠 */
+@media (max-width: 1180px) {
+  .header-right :deep(.artifact-links .label) {
+    display: none;
+  }
 }
 </style>

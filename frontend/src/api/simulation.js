@@ -186,6 +186,15 @@ export const getSimulationHistory = (limit = 20) => {
 }
 
 /**
+ * 永久删除历史模拟记录（含模拟目录、关联报告；孤立项目文件与图谱一并清理）
+ * 删除是破坏性操作，刻意不做自动重试。
+ * @param {string[]} simulationIds
+ */
+export const deleteSimulations = (simulationIds) => {
+  return service.post('/api/simulation/delete', { simulation_ids: simulationIds })
+}
+
+/**
  * 预估一次模拟将发起的 LLM 调用次数（不发起任何调用）
  * @param {Object} data - { simulation_id, max_rounds?, platform? }
  */
@@ -201,3 +210,64 @@ export const injectEvent = (data) => {
   return service.post('/api/simulation/inject', data)
 }
 
+
+/**
+ * 预测市场概览（价格、成交量、历史与最近成交）
+ * @param {string} simulationId
+ */
+export const getSimulationMarket = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/market`)
+}
+
+/**
+ * 立即增量处理市场（调试 / 补算）
+ * @param {string} simulationId
+ */
+export const processSimulationMarket = (simulationId) => {
+  return service.post(`/api/simulation/${simulationId}/market/process`)
+}
+
+/**
+ * 从同一初始条件创建分支
+ * @param {string} simulationId
+ * @param {Object} data - { label?, event?, event_round?, auto_start?, platform?, max_rounds? }
+ */
+export const forkSimulation = (simulationId, data) => {
+  return service.post(`/api/simulation/${simulationId}/fork`, data)
+}
+
+/**
+ * 获取分支元数据
+ * @param {string} simulationId
+ */
+export const getSimulationFork = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/fork`)
+}
+
+/**
+ * 列出某个模拟的所有分支
+ * @param {string} simulationId
+ */
+export const listSimulationForks = (simulationId) => {
+  return service.get(`/api/simulation/${simulationId}/forks`)
+}
+
+/**
+ * A/B 对比两个模拟
+ * @param {string} simulationId
+ * @param {string} otherId
+ */
+export const compareSimulations = (simulationId, otherId) => {
+  return service.get(`/api/simulation/${simulationId}/compare`, {
+    params: { other_id: otherId }
+  })
+}
+
+/**
+ * 派生新闻头条（按互动量排序的帖子/评论）
+ * @param {string} simulationId
+ * @param {number} limit
+ */
+export const getSimulationNews = (simulationId, limit = 12) => {
+  return service.get(`/api/simulation/${simulationId}/news`, { params: { limit } })
+}

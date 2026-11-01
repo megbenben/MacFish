@@ -276,3 +276,49 @@ def test_scorecard_banner_when_nothing_is_eligible():
 def test_stability_threshold_is_two_thirds():
     assert scoring.stability_threshold(3) == pytest.approx(2 / 3)
     assert scoring.stability_threshold(1) == 1.0
+
+
+# ══════════════════════════════════════════════════════════════
+# 概率校准
+# ══════════════════════════════════════════════════════════════
+
+def test_calibration_metrics_perfect_and_worst():
+    perfect = scoring.calibration_metrics([(1.0, 1), (0.0, 0)])
+    assert perfect['n'] == 2
+    assert perfect['brier_score'] == 0.0
+    assert perfect['log_loss'] < 1e-5
+
+    inverted = scoring.calibration_metrics([(1.0, 0), (0.0, 1)])
+    assert inverted['brier_score'] == 1.0
+    assert inverted['log_loss'] > 10
+
+
+def test_calibration_metrics_bins_and_invalid_pairs():
+    result = scoring.calibration_metrics([
+        (0.1, 0), (0.15, 0), (0.8, 1), (0.9, 1),
+        (None, 1), (1.4, 1), ('bad', 0), (0.5, 2),
+    ])
+    assert result['n'] == 4
+    assert [b['bin'] for b in result['reliability']] == ['0.1-0.2', '0.8-0.9', '0.9-1.0']
+    assert result['reliability'][0]['observed'] == 0.0
+    assert result['reliability'][1]['observed'] == 1.0
+    assert result['reliability'][2]['observed'] == 1.0
+
+
+def test_scorecard_reads_probabilities_from_judge():
+    attempts = [{
+        'status': 'ok', 'headline_eligible': True, 'synthetic': False,
+        'attempt': 1, 'case_id': 'c', 'offline_metrics': {},
+        'llm_scores': {'questions': [
+            {'question_id': 'q1', 'report_stance': 'down', 'expected': 'down',
+             'report_probability': 0.8},
+            {'question_id': 'q2', 'report_stance': 'ease', 'expected': 'intensify',
+             'report_probability': 0.7},
+            {'question_id': 'q3', 'report_stance': 'down', 'expected': 'down',
+             'report_probability': None},
+        ]},
+    }]
+    card = scoring.build_scorecard(attempts)
+    cal = card['calibration']
+    assert cal['n'] == 2
+    assert cal['brier_score'] == pytest.approx((0.04 + 0.49) / 2, abs=1e-4)

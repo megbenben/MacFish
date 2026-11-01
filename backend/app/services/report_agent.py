@@ -25,12 +25,13 @@ from ..utils.llm_client import LLMClient
 from ..utils.logger import get_logger
 from ..utils.locale import get_language_instruction, t
 from .zep_tools import (
-    ZepToolsService, 
-    SearchResult, 
-    InsightForgeResult, 
+    ZepToolsService,
+    SearchResult,
+    InsightForgeResult,
     PanoramaResult,
     InterviewResult
 )
+from .simulation_evidence import CitationRegistry, SimulationEvidenceService
 
 logger = get_logger('mirofish.report_agent')
 
@@ -574,7 +575,9 @@ class Report:
     created_at: str = ""
     completed_at: str = ""
     error: Optional[str] = None
-    
+    #: 报告引用的证据（S1/S2… → 模拟 post/comment/action 的 source_id）
+    citations: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "report_id": self.report_id,
@@ -586,7 +589,8 @@ class Report:
             "markdown_content": self.markdown_content,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
-            "error": self.error
+            "error": self.error,
+            "citations": self.citations,
         }
 
 
@@ -668,7 +672,32 @@ TOOL_DESC_INTERVIEW_AGENTS = """\
 - 关键引言（可直接引用）
 - 采访摘要和观点对比
 
-【重要】需要OASIS模拟环境正在运行才能使用此功能！"""
+【重要】模拟结束后仍可用：会退回到落盘的 posts/comments/actions 作答。"""
+
+TOOL_DESC_SIMULATION_SEARCH = """\
+【模拟实录检索 - 直接查看模拟中发生了什么】
+从本次模拟的落盘数据里检索 Agent 的真实帖子、评论与动作。
+数据来源：`<sim>/<platform>/actions.jsonl` 与 `<platform>_simulation.db`。
+返回的每条结果都带证据编号（如 [S3]），报告正文引用时必须带上编号。
+
+【使用场景】
+- 需要知道 Agents 实际发了什么、争论了什么
+- 需要引用具体帖子/评论作为预测证据
+- 需要核实某个角色在模拟中的行为
+
+【返回内容】
+- 证据编号、平台、Agent、回合、原文
+- 点赞/转发等互动数据（帖子/评论）"""
+
+TOOL_DESC_SIMULATION_OVERVIEW = """\
+【模拟实录概览 - 规模与活跃度】
+返回本次模拟的状态、实体/人设数量、时间配置、各平台 posts/comments/actions
+数量、动作类型分布、最活跃 Agent 与高互动帖子。
+
+【使用场景】
+- 报告开篇需要交代模拟规模
+- 判断哪些平台/哪些 Agent 值得深入检索
+- 避免在没有数据支撑时泛泛而谈"""
 
 # ── 大纲规划 prompt ──
 
@@ -742,6 +771,9 @@ PLAN_USER_PROMPT_TEMPLATE = """\
 
 【模拟预测到的部分未来事实样本】
 {related_facts_json}
+
+【模拟实录概览（来自落盘的 posts / comments / actions）】
+{simulation_evidence}
 
 请以「上帝视角」审视这个未来预演：
 1. 在我们设定的条件下，未来呈现出了什么样的状态？
@@ -853,10 +885,18 @@ SECTION_SYSTEM_PROMPT_TEMPLATE = """\
 {tools_description}
 
 【工具使用建议 - 请混合使用不同工具，不要只用一种】
+- simulation_overview: 先看模拟规模、各平台帖子/评论/动作数与最活跃 Agent
+- simulation_search: 检索模拟中 Agent 的真实帖子/评论/动作；结果带 [S1] 形式的证据编号
 - insight_forge: 深度洞察分析，自动分解问题并多维度检索事实和关系
 - panorama_search: 广角全景搜索，了解事件全貌、时间线和演变过程
 - quick_search: 快速验证某个具体信息点
 - interview_agents: 采访模拟Agent，获取不同角色的第一人称观点和真实反应
+
+【引用规则 - 必须遵守】
+- 凡是来自模拟实录的判断，必须在句末标注证据编号，例如：`…引发集中质疑 [S2][S5]。`
+- 只能使用工具结果里**实际出现过**的编号，禁止编造 S 编号
+- 一个结论可以绑定多个编号；没有证据支撑的推测要明确写成"推测"
+- 引用原文时同时保留编号，方便读者回溯到具体帖子/评论
 
 ═══════════════════════════════════════════════════════════════
 【工作流程】
@@ -1052,6 +1092,9 @@ class ReportAgent:
         
         # 工具定义
         self.tools = self._define_tools()
+
+        # 证据引用登记表：工具返回的模拟贴文/评论/动作会在这里换成 S1/S2…
+        self._citation_registry = CitationRegistry()
         
         # 日志记录器（在 generate_report 中初始化）
         self.report_logger: Optional[ReportLogger] = None
@@ -1094,6 +1137,20 @@ class ReportAgent:
                     "interview_topic": "采访主题或需求描述（如：'了解学生对宿舍甲醛事件的看法'）",
                     "max_agents": "最多采访的Agent数量（可选，默认5，最大10）"
                 }
+            },
+            "simulation_search": {
+                "name": "simulation_search",
+                "description": TOOL_DESC_SIMULATION_SEARCH,
+                "parameters": {
+                    "query": "检索词：话题、实体名、情绪或具体说法",
+                    "limit": "返回条数（可选，默认 12，最大 30）",
+                    "platform": "平台：twitter / reddit（可选，默认全部）"
+                }
+            },
+            "simulation_overview": {
+                "name": "simulation_overview",
+                "description": TOOL_DESC_SIMULATION_OVERVIEW,
+                "parameters": {}
             }
         }
     
@@ -1163,7 +1220,37 @@ class ReportAgent:
                     max_agents=max_agents
                 )
                 return result.to_text()
-            
+
+            elif tool_name == "simulation_search":
+                query = parameters.get("query", "")
+                limit = parameters.get("limit", 12)
+                if isinstance(limit, str):
+                    try:
+                        limit = int(limit)
+                    except ValueError:
+                        limit = 12
+                platform = str(parameters.get("platform", "") or "").strip().lower()
+                platforms = [platform] if platform in ("twitter", "reddit") else None
+                items = SimulationEvidenceService.search(
+                    self.simulation_id, query=query, limit=limit, platforms=platforms
+                )
+                if not items:
+                    return "模拟实录中没有检索到匹配内容。请换一个更宽泛的关键词。"
+                lines = ["模拟实录检索结果（引用时使用方括号内的编号）："]
+                for item in items:
+                    citation_id = self._citation_registry.register(item)
+                    lines.append(
+                        f"\n[{citation_id}] {item['kind']} · {item['platform']} · "
+                        f"{item.get('agent', '')}"
+                        + (f" · round {item['round']}" if item.get('round') is not None else "")
+                        + f"\n{item['content']}"
+                    )
+                return "\n".join(lines)
+
+            elif tool_name == "simulation_overview":
+                text = SimulationEvidenceService.overview_text(self.simulation_id)
+                return text or "没有找到模拟落盘数据。"
+
             # ========== 向后兼容的旧工具（内部重定向到新工具） ==========
             
             elif tool_name == "search_graph":
@@ -1199,14 +1286,18 @@ class ReportAgent:
                 return json.dumps(result, ensure_ascii=False, indent=2)
             
             else:
-                return f"未知工具: {tool_name}。请使用以下工具之一: insight_forge, panorama_search, quick_search"
+                return (
+                    f"未知工具: {tool_name}。请使用以下工具之一: "
+                    "simulation_overview, simulation_search, insight_forge, "
+                    "panorama_search, quick_search, interview_agents"
+                )
                 
         except Exception as e:
             logger.error(t('report.toolExecFailed', toolName=tool_name, error=str(e)))
             return f"工具执行失败: {str(e)}"
     
     # 合法的工具名称集合，用于裸 JSON 兜底解析时校验
-    VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+    VALID_TOOL_NAMES = {"insight_forge", "panorama_search", "quick_search", "interview_agents", "simulation_search", "simulation_overview"}
 
     def _parse_tool_calls(self, response: str) -> List[Dict[str, Any]]:
         """
@@ -1307,6 +1398,14 @@ class ReportAgent:
         if progress_callback:
             progress_callback("planning", 30, t('progress.generatingOutline'))
         
+        # 报告必须能看到"模拟里实际发生了什么"：图谱只是种子文档，
+        # 模拟动作默认并不回写图谱（enable_graph_memory_update=false）。
+        try:
+            simulation_evidence = SimulationEvidenceService.overview_text(self.simulation_id)
+        except Exception as exc:
+            logger.warning(f"读取模拟概览失败（继续用图谱上下文）: {exc}")
+            simulation_evidence = "（没有可用的模拟落盘数据）"
+
         system_prompt = f"{PLAN_SYSTEM_PROMPT}\n\n{get_language_instruction()}"
         user_prompt = PLAN_USER_PROMPT_TEMPLATE.format(
             simulation_requirement=self.simulation_requirement,
@@ -1315,6 +1414,7 @@ class ReportAgent:
             entity_types=list(context.get('graph_statistics', {}).get('entity_types', {}).keys()),
             total_entities=context.get('total_entities', 0),
             related_facts_json=json.dumps(context.get('related_facts', [])[:10], ensure_ascii=False, indent=2),
+            simulation_evidence=simulation_evidence,
         )
 
         try:
@@ -1445,7 +1545,7 @@ class ReportAgent:
         min_tool_calls = 3  # 最少工具调用次数
         conflict_retries = 0  # 工具调用与Final Answer同时出现的连续冲突次数
         used_tools = set()  # 记录已调用过的工具名
-        all_tools = {"insight_forge", "panorama_search", "quick_search", "interview_agents"}
+        all_tools = {"insight_forge", "panorama_search", "quick_search", "interview_agents", "simulation_search", "simulation_overview"}
 
         # 报告上下文，用于InsightForge的子问题生成
         report_context = f"章节标题: {section.title}\n模拟需求: {self.simulation_requirement}"
@@ -1714,7 +1814,10 @@ class ReportAgent:
             Report: 完整报告
         """
         import uuid
-        
+
+        # 每次生成都重新登记引用，避免复用同一个 Agent 实例时串号
+        self._citation_registry = CitationRegistry()
+
         # 如果没有传入 report_id，则自动生成
         if not report_id:
             report_id = f"report_{uuid.uuid4().hex[:12]}"
@@ -1863,21 +1966,24 @@ class ReportAgent:
             
             # 使用ReportManager组装完整报告
             report.markdown_content = ReportManager.assemble_full_report(report_id, outline)
+            report.citations = self._citation_registry.items()
             report.status = ReportStatus.COMPLETED
             report.completed_at = datetime.now().isoformat()
             
             # 计算总耗时
             total_time_seconds = (datetime.now() - start_time).total_seconds()
             
+            # 先落盘再写 report_complete：前端收到完成日志时会立刻 GET /report/<id>
+            # 拉 citations，如果 meta.json 还没写，就会拿到旧内容。
+            ReportManager.save_report(report)
+
             # 记录报告完成日志
             if self.report_logger:
                 self.report_logger.log_report_complete(
                     total_sections=total_sections,
                     total_time_seconds=total_time_seconds
                 )
-            
-            # 保存最终报告
-            ReportManager.save_report(report)
+
             ReportManager.update_progress(
                 report_id, "completed", 100, t('progress.reportComplete'),
                 completed_sections=completed_section_titles
@@ -2648,7 +2754,8 @@ class ReportManager:
             markdown_content=markdown_content,
             created_at=data.get('created_at', ''),
             completed_at=data.get('completed_at', ''),
-            error=data.get('error')
+            error=data.get('error'),
+            citations=data.get('citations') or [],
         )
     
     @classmethod

@@ -23,6 +23,7 @@ from ..utils.logger import get_logger
 from ..utils.locale import get_locale, set_locale
 from .zep_graph_memory_updater import ZepGraphMemoryManager
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
+from .market_simulator import MarketSimulator
 
 logger = get_logger('mirofish.simulation_runner')
 
@@ -411,6 +412,13 @@ class SimulationRunner:
         else:
             cls._graph_memory_enabled[simulation_id] = False
         
+        # 每次 start 都是一次新的运行：清空上一次的市场成交与游标。
+        # 清空动作日志后若市场游标还在旧位置，会把新动作当成"已处理"而漏掉。
+        try:
+            MarketSimulator.reset(simulation_id)
+        except Exception as exc:
+            logger.warning(f"重置预测市场失败（不影响模拟）: {exc}")
+
         # 确定运行哪个脚本（脚本位于 backend/scripts/ 目录）
         if platform == "twitter":
             script_name = "run_twitter_simulation.py"
@@ -560,6 +568,12 @@ class SimulationRunner:
                         reddit_actions_log, reddit_position, state, "reddit"
                     )
 
+                # 把新动作喂给预测市场（增量、无 LLM）。失败只告警，不影响模拟。
+                try:
+                    MarketSimulator.process(simulation_id)
+                except Exception as exc:
+                    logger.debug(f"预测市场更新失败: {simulation_id}, error={exc}")
+
                 # 有新动作就刷新空闲计时
                 current_actions_count = state.twitter_actions_count + state.reddit_actions_count
                 if current_actions_count != last_actions_count:
@@ -605,6 +619,11 @@ class SimulationRunner:
                 cls._read_action_log(twitter_actions_log, twitter_position, state, "twitter")
             if os.path.exists(reddit_actions_log):
                 cls._read_action_log(reddit_actions_log, reddit_position, state, "reddit")
+
+            try:
+                MarketSimulator.process(simulation_id)
+            except Exception as exc:
+                logger.debug(f"收尾时更新预测市场失败: {simulation_id}, error={exc}")
 
             # 进程结束
             exit_code = process.returncode

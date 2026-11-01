@@ -50,7 +50,9 @@ class SimulationState:
     # 平台启用状态
     enable_twitter: bool = True
     enable_reddit: bool = True
-    
+    # 预测市场是社区的派生层，不需要额外 LLM 调用；默认开启
+    enable_market: bool = True
+
     # 状态
     status: SimulationStatus = SimulationStatus.CREATED
     
@@ -85,6 +87,7 @@ class SimulationState:
             "graph_id": self.graph_id,
             "enable_twitter": self.enable_twitter,
             "enable_reddit": self.enable_reddit,
+            "enable_market": self.enable_market,
             "status": self.status.value,
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
@@ -106,6 +109,9 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "enable_twitter": self.enable_twitter,
+            "enable_reddit": self.enable_reddit,
+            "enable_market": self.enable_market,
             "status": self.status.value,
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
@@ -178,6 +184,7 @@ class SimulationManager:
             graph_id=data.get("graph_id", ""),
             enable_twitter=data.get("enable_twitter", True),
             enable_reddit=data.get("enable_reddit", True),
+            enable_market=data.get("enable_market", True),
             status=SimulationStatus(data.get("status", "created")),
             entities_count=data.get("entities_count", 0),
             profiles_count=data.get("profiles_count", 0),
@@ -202,6 +209,7 @@ class SimulationManager:
         graph_id: str,
         enable_twitter: bool = True,
         enable_reddit: bool = True,
+        enable_market: bool = True,
     ) -> SimulationState:
         """
         创建新的模拟
@@ -224,6 +232,7 @@ class SimulationManager:
             graph_id=graph_id,
             enable_twitter=enable_twitter,
             enable_reddit=enable_reddit,
+            enable_market=enable_market,
             status=SimulationStatus.CREATED,
         )
         

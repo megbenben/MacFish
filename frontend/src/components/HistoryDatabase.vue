@@ -17,21 +17,67 @@
       <div class="section-line"></div>
     </div>
 
+    <!-- 批量管理工具栏 -->
+    <div v-if="projects.length > 0" class="history-toolbar">
+      <template v-if="!selectionMode">
+        <button class="toolbar-btn" @click="enterSelectionMode">
+          <span class="toolbar-icon">☐</span>
+          {{ $t('history.manageRecords') }}
+        </button>
+      </template>
+      <template v-else>
+        <span class="selection-count">
+          {{ $t('history.selectedCount', { count: selectedIds.length }) }}
+        </span>
+        <button class="toolbar-btn" @click="toggleSelectAll">
+          {{ allSelected ? $t('history.deselectAll') : $t('history.selectAll') }}
+        </button>
+        <button
+          class="toolbar-btn danger"
+          :disabled="selectedIds.length === 0 || deleting"
+          @click="requestDelete"
+        >
+          {{ $t('history.deleteSelected') }}<span v-if="selectedIds.length"> ({{ selectedIds.length }})</span>
+        </button>
+        <button class="toolbar-btn" :disabled="deleting" @click="exitSelectionMode">
+          {{ $t('common.cancel') }}
+        </button>
+      </template>
+    </div>
+    <div v-if="selectionMode && !deleteError" class="history-hint">
+      {{ $t('history.selectionHint') }}
+    </div>
+    <div v-if="deleteError" class="history-notice">{{ deleteError }}</div>
+
     <!-- 卡片容器（只在有项目时显示） -->
-    <div v-if="projects.length > 0" class="cards-container" :class="{ expanded: isExpanded }" :style="containerStyle">
-      <div 
-        v-for="(project, index) in projects" 
+    <div v-if="projects.length > 0" class="cards-container" :class="{ expanded: effectiveExpanded }" :style="containerStyle">
+      <div
+        v-for="(project, index) in projects"
         :key="project.simulation_id"
         class="project-card"
-        :class="{ expanded: isExpanded, hovering: hoveringCard === index }"
+        :class="{
+          expanded: effectiveExpanded,
+          hovering: hoveringCard === index,
+          'selection-mode': selectionMode,
+          selected: isSelected(project.simulation_id)
+        }"
         :style="getCardStyle(index)"
         @mouseenter="hoveringCard = index"
         @mouseleave="hoveringCard = null"
-        @click="navigateToProject(project)"
+        @click="handleCardClick(project)"
       >
         <!-- 卡片头部：simulation_id 和 功能可用状态 -->
         <div class="card-header">
-          <span class="card-id">{{ formatSimulationId(project.simulation_id) }}</span>
+          <div class="card-header-left">
+            <span
+              v-if="selectionMode"
+              class="select-indicator"
+              :class="{ checked: isSelected(project.simulation_id) }"
+            >
+              <span v-if="isSelected(project.simulation_id)">✓</span>
+            </span>
+            <span class="card-id">{{ formatSimulationId(project.simulation_id) }}</span>
+          </div>
           <div class="card-status-icons">
             <span 
               class="status-icon" 
@@ -187,6 +233,35 @@
         </div>
       </Transition>
     </Teleport>
+
+    <!-- 删除确认弹窗 -->
+    <Teleport to="body">
+      <Transition name="modal">
+        <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="cancelDelete">
+          <div class="confirm-modal">
+            <div class="confirm-header">
+              <span class="confirm-title">{{ $t('history.deleteConfirmTitle') }}</span>
+              <button class="modal-close" :disabled="deleting" @click="cancelDelete">×</button>
+            </div>
+            <div class="confirm-body">
+              <p class="confirm-text">
+                {{ $t('history.deleteConfirmText', { count: selectedIds.length }) }}
+              </p>
+              <p class="confirm-warning">{{ $t('history.deleteConfirmWarning') }}</p>
+              <div v-if="deleteError" class="confirm-error">{{ deleteError }}</div>
+            </div>
+            <div class="confirm-actions">
+              <button class="confirm-btn" :disabled="deleting" @click="cancelDelete">
+                {{ $t('common.cancel') }}
+              </button>
+              <button class="confirm-btn danger" :disabled="deleting" @click="confirmDelete">
+                {{ deleting ? $t('history.deleting') : $t('common.confirm') }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -194,7 +269,7 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getSimulationHistory } from '../api/simulation'
+import { getSimulationHistory, deleteSimulations } from '../api/simulation'
 
 const router = useRouter()
 const route = useRoute()
@@ -207,6 +282,14 @@ const isExpanded = ref(false)
 const hoveringCard = ref(null)
 const historyContainer = ref(null)
 const selectedProject = ref(null)  // 当前选中的项目（用于弹窗）
+
+// 批量删除
+const selectionMode = ref(false)
+const selectedIds = ref([])
+const showDeleteConfirm = ref(false)
+const deleting = ref(false)
+const deleteError = ref('')
+
 let observer = null
 let isAnimating = false  // 动画锁，防止闪烁
 let expandDebounceTimer = null  // 防抖定时器
@@ -218,9 +301,16 @@ const CARD_WIDTH = 280
 const CARD_HEIGHT = 280 
 const CARD_GAP = 24
 
+// 选择模式下强制展开成网格：折叠态的卡片是叠在一起的，后面的卡片点不到
+const effectiveExpanded = computed(() => selectionMode.value || isExpanded.value)
+
+const allSelected = computed(() => {
+  return projects.value.length > 0 && selectedIds.value.length === projects.value.length
+})
+
 // 动态计算容器高度样式
 const containerStyle = computed(() => {
-  if (!isExpanded.value) {
+  if (!effectiveExpanded.value) {
     // 折叠态：固定高度
     return { minHeight: '420px' }
   }
@@ -241,8 +331,8 @@ const containerStyle = computed(() => {
 // 获取卡片样式
 const getCardStyle = (index) => {
   const total = projects.value.length
-  
-  if (isExpanded.value) {
+
+  if (effectiveExpanded.value) {
     // 展开态：网格布局
     const transition = 'transform 700ms cubic-bezier(0.23, 1, 0.32, 1), opacity 700ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.3s ease, border-color 0.3s ease'
 
@@ -393,6 +483,82 @@ const truncateFilename = (filename, maxLength) => {
   return truncatedName + ext
 }
 
+// ===== 批量选择与删除 =====
+const enterSelectionMode = () => {
+  selectionMode.value = true
+  selectedIds.value = []
+  deleteError.value = ''
+}
+
+const exitSelectionMode = () => {
+  if (deleting.value) return
+  selectionMode.value = false
+  selectedIds.value = []
+  deleteError.value = ''
+}
+
+const isSelected = (simulationId) => selectedIds.value.includes(simulationId)
+
+const toggleSelection = (simulationId) => {
+  if (isSelected(simulationId)) {
+    selectedIds.value = selectedIds.value.filter(id => id !== simulationId)
+  } else {
+    selectedIds.value = [...selectedIds.value, simulationId]
+  }
+}
+
+const toggleSelectAll = () => {
+  selectedIds.value = allSelected.value
+    ? []
+    : projects.value.map(project => project.simulation_id)
+}
+
+const handleCardClick = (project) => {
+  if (selectionMode.value) {
+    toggleSelection(project.simulation_id)
+  } else {
+    navigateToProject(project)
+  }
+}
+
+const requestDelete = () => {
+  if (!selectedIds.value.length || deleting.value) return
+  deleteError.value = ''
+  showDeleteConfirm.value = true
+}
+
+const cancelDelete = () => {
+  if (deleting.value) return
+  showDeleteConfirm.value = false
+}
+
+const confirmDelete = async () => {
+  if (!selectedIds.value.length || deleting.value) return
+
+  deleting.value = true
+  deleteError.value = ''
+  try {
+    const response = await deleteSimulations([...selectedIds.value])
+    const failed = response.data?.failed || []
+
+    // 以服务端为准刷新列表：部分失败时也能准确反映还剩哪些记录
+    await loadHistory()
+    showDeleteConfirm.value = false
+    selectionMode.value = false
+    selectedIds.value = []
+    if (failed.length) {
+      deleteError.value = t('history.deletePartial')
+    }
+  } catch (error) {
+    console.error('删除历史记录失败:', error)
+    deleteError.value = t('history.deleteFailed', {
+      error: error.message || t('common.unknownError')
+    })
+  } finally {
+    deleting.value = false
+  }
+}
+
 // 打开项目详情弹窗
 const navigateToProject = (simulation) => {
   selectedProject.value = simulation
@@ -443,6 +609,11 @@ const loadHistory = async () => {
     const response = await getSimulationHistory(20)
     if (response.success) {
       projects.value = response.data || []
+      // 列表重新加载后丢掉已经不在列表里的勾选（例如在别的标签页删掉了）
+      if (selectedIds.value.length) {
+        const available = new Set(projects.value.map(project => project.simulation_id))
+        selectedIds.value = selectedIds.value.filter(id => available.has(id))
+      }
     }
   } catch (error) {
     console.error('加载历史项目失败:', error)
@@ -461,7 +632,8 @@ const initObserver = () => {
   observer = new IntersectionObserver(
     (entries) => {
       entries.forEach((entry) => {
-        const shouldExpand = entry.isIntersecting
+        // 选择模式下始终保持网格展开，避免滚出视口时卡片叠回去、勾选不了
+        const shouldExpand = selectionMode.value || entry.isIntersecting
         
         // 更新待执行的目标状态（无论是否在动画中都要记录最新的目标状态）
         pendingState = shouldExpand
@@ -653,6 +825,91 @@ onUnmounted(() => {
   text-transform: uppercase;
 }
 
+/* 批量管理工具栏 */
+.history-toolbar {
+  position: relative;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 40px;
+  margin: 0 0 12px;
+}
+
+.toolbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid #D1D5DB;
+  background: #FFFFFF;
+  color: #4B5563;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.toolbar-btn:hover:not(:disabled) {
+  border-color: #111827;
+  color: #111827;
+}
+
+.toolbar-btn.danger {
+  border-color: #FCA5A5;
+  color: #B91C1C;
+}
+
+.toolbar-btn.danger:hover:not(:disabled) {
+  background: #B91C1C;
+  border-color: #B91C1C;
+  color: #FFFFFF;
+}
+
+.toolbar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.toolbar-icon {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.selection-count {
+  margin-right: auto;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 0.72rem;
+  color: #6B7280;
+  letter-spacing: 0.5px;
+}
+
+.history-hint {
+  position: relative;
+  z-index: 100;
+  padding: 0 40px 10px;
+  text-align: right;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
+  font-size: 0.65rem;
+  color: #9CA3AF;
+  letter-spacing: 0.3px;
+}
+
+.history-notice {
+  position: relative;
+  z-index: 100;
+  margin: 0 40px 12px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #B91C1C;
+  background: #FEF2F2;
+  border-left: 3px solid #B91C1C;
+  word-break: break-word;
+}
+
 /* 卡片容器 */
 .cards-container {
   position: relative;
@@ -687,6 +944,20 @@ onUnmounted(() => {
   z-index: 1000 !important;
 }
 
+.project-card.selection-mode {
+  cursor: pointer;
+}
+
+.project-card.selected {
+  border-color: #111827;
+  box-shadow: 0 0 0 1px #111827, 0 10px 15px -3px rgba(0, 0, 0, 0.12);
+}
+
+.project-card.selected .card-bottom-line {
+  width: 100%;
+  background-color: #111827;
+}
+
 /* 卡片头部 */
 .card-header {
   display: flex;
@@ -699,10 +970,40 @@ onUnmounted(() => {
   font-size: 0.7rem;
 }
 
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.select-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid #9CA3AF;
+  background: #FFFFFF;
+  color: #FFFFFF;
+  font-size: 0.65rem;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.select-indicator.checked {
+  background: #111827;
+  border-color: #111827;
+}
+
 .card-id {
   color: #6B7280;
   letter-spacing: 0.5px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 功能状态图标组 */
@@ -1068,6 +1369,16 @@ onUnmounted(() => {
   opacity: 0;
 }
 
+/* 删除确认弹窗复用同一套过渡 */
+.modal-enter-active .confirm-modal {
+  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.modal-enter-from .confirm-modal {
+  transform: scale(0.95) translateY(10px);
+  opacity: 0;
+}
+
 /* 弹窗头部 */
 .modal-header {
   display: flex;
@@ -1338,5 +1649,105 @@ onUnmounted(() => {
   letter-spacing: 0.3px;
   text-align: center;
   line-height: 1.5;
+}
+
+/* ===== 删除确认弹窗 ===== */
+.confirm-modal {
+  width: 440px;
+  max-width: 90vw;
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 8px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+
+.confirm-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid #F3F4F6;
+}
+
+.confirm-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #111827;
+  letter-spacing: 0.5px;
+}
+
+.confirm-body {
+  padding: 20px 24px;
+}
+
+.confirm-text {
+  margin: 0 0 12px;
+  font-size: 0.9rem;
+  color: #111827;
+  line-height: 1.6;
+}
+
+.confirm-warning {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: #B45309;
+  background: #FFFBEB;
+  border-left: 3px solid #F59E0B;
+}
+
+.confirm-error {
+  margin-top: 12px;
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: #B91C1C;
+  background: #FEF2F2;
+  border-left: 3px solid #B91C1C;
+  word-break: break-word;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 24px 20px;
+}
+
+.confirm-btn {
+  padding: 8px 18px;
+  border: 1px solid #D1D5DB;
+  background: #FFFFFF;
+  color: #374151;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.confirm-btn:hover:not(:disabled) {
+  border-color: #111827;
+  color: #111827;
+}
+
+.confirm-btn.danger {
+  background: #B91C1C;
+  border-color: #B91C1C;
+  color: #FFFFFF;
+}
+
+.confirm-btn.danger:hover:not(:disabled) {
+  background: #991B1B;
+  border-color: #991B1B;
+  color: #FFFFFF;
+}
+
+.confirm-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

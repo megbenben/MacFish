@@ -21,6 +21,7 @@
       </div>
 
       <div class="header-right">
+        <ArtifactLinks variant="light" />
         <LanguageSwitcher />
         <div class="step-divider"></div>
         <div class="workflow-step">
@@ -73,6 +74,7 @@ import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
+import ArtifactLinks from '../components/ArtifactLinks.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -349,5 +351,11 @@ onMounted(() => {
 
 .panel-wrapper.left {
   border-right: 1px solid #EAEAEA;
+}
+
+@media (max-width: 1180px) {
+  .header-right :deep(.artifact-links .label) {
+    display: none;
+  }
 }
 </style>

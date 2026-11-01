@@ -296,6 +296,84 @@ def generate_ontology():
         }), 500
 
 
+@graph_bp.route('/ontology', methods=['PUT'])
+def update_ontology():
+    """人工修订本体。
+
+    README 一直写着「确认前可以自行调整」，但此前前端只有只读标签。
+    这里提供后端写入口：按 name 去重、限制数量、保留描述等字段。
+    已建图时只改项目元数据，不改已落盘图谱——返回 needs_rebuild=true，
+    让前端明确提示需要重建。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        project_id = data.get('project_id')
+        if not project_id:
+            return jsonify({"success": False, "error": t('api.requireProjectId')}), 400
+
+        project = ProjectManager.get_project(project_id)
+        if not project:
+            return jsonify({
+                "success": False,
+                "error": t('api.projectNotFound', id=project_id)
+            }), 404
+        if project.status == ProjectStatus.GRAPH_BUILDING:
+            return jsonify({
+                "success": False,
+                "error": t('api.ontologyLockedDuringBuild')
+            }), 409
+
+        def _normalize(items, limit=20):
+            if not isinstance(items, list):
+                raise ValueError(t('api.invalidOntology'))
+            normalized, seen = [], set()
+            for item in items:
+                if isinstance(item, str):
+                    item = {"name": item}
+                if not isinstance(item, dict):
+                    raise ValueError(t('api.invalidOntology'))
+                name = str(item.get("name") or "").strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                normalized.append({**item, "name": name})
+                if len(normalized) >= limit:
+                    break
+            return normalized
+
+        entity_types = _normalize(data.get("entity_types"))
+        edge_types = _normalize(data.get("edge_types"))
+        if not entity_types and not edge_types:
+            return jsonify({"success": False, "error": t('api.invalidOntology')}), 400
+
+        project.ontology = {
+            "entity_types": entity_types,
+            "edge_types": edge_types,
+        }
+        if "analysis_summary" in data:
+            project.analysis_summary = str(data.get("analysis_summary") or "")
+        ProjectManager.save_project(project)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "project_id": project.project_id,
+                "ontology": project.ontology,
+                "analysis_summary": project.analysis_summary,
+                "needs_rebuild": bool(project.graph_id),
+            }
+        })
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.error(f"更新本体失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }), 500
+
+
 def _count_graph_references(graph_id: str) -> int:
     """统计有多少个模拟仍然指向这张图谱。
 
@@ -562,7 +640,7 @@ def build_graph():
                 episode_uuids = builder.add_text_batches(
                     graph_id, 
                     chunks,
-                    batch_size=3,
+                    batch_size=max(3, int(Config.GRAPH_EXTRACTION_CONCURRENCY)),
                     progress_callback=add_progress_callback
                 )
                 

@@ -38,6 +38,13 @@ export const renderMarkdown = (content) => {
   // 处理行内代码
   html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
 
+  // 证据引用：报告正文里的 [S1]/[S12] 变成可点击的小标签。
+  // 统一在 Markdown 管线里处理，Step4Report 与 Step5Interaction 都能用。
+  html = html.replace(
+    /\[(S\d{1,3})\]/g,
+    '<span class="md-citation" data-citation="$1">$1</span>'
+  )
+
   // 处理标题
   html = html.replace(/^#### (.+)$/gm, '<h5 class="md-h5">$1</h5>')
   html = html.replace(/^### (.+)$/gm, '<h4 class="md-h4">$1</h4>')

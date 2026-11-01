@@ -4,6 +4,7 @@
     <nav class="navbar">
       <div class="nav-brand">MACFISH</div>
       <div class="nav-links">
+        <ArtifactLinks variant="dark" />
         <LanguageSwitcher />
         <a href="https://github.com/666ghj/MiroFish" target="_blank" class="github-link">
           {{ $t('nav.visitGithub') }} <span class="arrow">↗</span>
@@ -221,6 +222,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
+import ArtifactLinks from '../components/ArtifactLinks.vue'
 
 const router = useRouter()
 const { t } = useI18n()

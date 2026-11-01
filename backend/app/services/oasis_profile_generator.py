@@ -8,7 +8,9 @@ OASIS Agent Profile生成器
 3. 区分个人实体和抽象群体实体
 """
 
+import hashlib
 import json
+import os
 import random
 import time
 from typing import Dict, Any, List, Optional
@@ -502,6 +504,55 @@ class OasisProfileGenerator:
         """判断是否是群体/机构类型实体"""
         return entity_type.lower() in self.GROUP_ENTITY_TYPES
     
+    def _persona_cache_key(
+        self,
+        entity_name: str,
+        entity_type: str,
+        entity_summary: str,
+        entity_attributes: Dict[str, Any],
+        context: str,
+    ) -> str:
+        """同一实体 + 同一上下文 + 同一模型 → 同一 key。
+
+        人设生成是整个流水线里最贵的一次性开销（每个实体一次 LLM）。
+        重建图谱或重跑模拟时实体通常不变，缓存可以把这部分成本直接归零。
+        """
+        payload = {
+            "name": entity_name,
+            "type": entity_type,
+            "summary": entity_summary or "",
+            "attributes": entity_attributes or {},
+            "context": context or "",
+            "model": self.model_name,
+            "individual": self._is_individual_entity(entity_type),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _read_persona_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        if not Config.PERSONA_CACHE_ENABLED:
+            return None
+        path = os.path.join(Config.PERSONA_CACHE_DIR, f"{cache_key}.json")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _write_persona_cache(self, cache_key: str, data: Dict[str, Any]) -> None:
+        if not Config.PERSONA_CACHE_ENABLED:
+            return
+        try:
+            os.makedirs(Config.PERSONA_CACHE_DIR, exist_ok=True)
+            path = os.path.join(Config.PERSONA_CACHE_DIR, f"{cache_key}.json")
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.warning(f"写入人设缓存失败: {exc}")
+
     def _generate_profile_with_llm(
         self,
         entity_name: str,
@@ -518,8 +569,16 @@ class OasisProfileGenerator:
         - 群体/机构实体：生成代表性账号设定
         """
         
+        cache_key = self._persona_cache_key(
+            entity_name, entity_type, entity_summary, entity_attributes, context
+        )
+        cached = self._read_persona_cache(cache_key)
+        if cached is not None:
+            logger.info(f"命中人设缓存: {entity_name}")
+            return cached
+
         is_individual = self._is_individual_entity(entity_type)
-        
+
         if is_individual:
             prompt = self._build_individual_persona_prompt(
                 entity_name, entity_type, entity_summary, entity_attributes, context
@@ -528,6 +587,10 @@ class OasisProfileGenerator:
             prompt = self._build_group_persona_prompt(
                 entity_name, entity_type, entity_summary, entity_attributes, context
             )
+
+        cache_key = self._persona_cache_key(
+            entity_name, entity_type, entity_summary, entity_attributes, context
+        )
 
         # 尝试多次生成，直到成功或达到最大重试次数
         max_attempts = 3
@@ -559,7 +622,8 @@ class OasisProfileGenerator:
                         result["bio"] = entity_summary[:200] if entity_summary else f"{entity_type}: {entity_name}"
                     if "persona" not in result or not result["persona"]:
                         result["persona"] = entity_summary or f"{entity_name}是一个{entity_type}。"
-                    
+
+                    self._write_persona_cache(cache_key, result)
                     return result
                     
                 except json.JSONDecodeError as je:
@@ -569,6 +633,7 @@ class OasisProfileGenerator:
                     result = self._try_fix_json(content, entity_name, entity_type, entity_summary)
                     if result.get("_fixed"):
                         del result["_fixed"]
+                        self._write_persona_cache(cache_key, result)
                         return result
                     
                     last_error = je
@@ -689,7 +754,7 @@ class OasisProfileGenerator:
         """构建个人实体的详细人设提示词"""
         
         attrs_str = json.dumps(entity_attributes, ensure_ascii=False) if entity_attributes else "无"
-        context_str = context[:3000] if context else "无额外上下文"
+        context_str = context[:6000] if context else "无额外上下文"
         
         return f"""为实体生成详细的社交媒体用户人设,最大程度还原已有现实情况。
 
@@ -725,6 +790,12 @@ class OasisProfileGenerator:
 - {get_language_instruction()} (gender字段必须用英文male/female)
 - 内容要与实体信息保持一致
 - age必须是有效的整数，gender必须是"male"或"female"
+
+【接地要求 - 必须遵守】
+- 只使用上方「实体摘要 / 实体属性 / 上下文信息」中出现的事实
+- 关系网络必须来自上下文里的实体与关系，不要凭空发明组织或人物
+- 对上下文没给出的细节，写成合理的推断，并避免给出精确数字/日期
+- persona 中至少明确写出：与哪些实体相关、在事件中的既有立场、受什么约束
 """
 
     def _build_group_persona_prompt(
@@ -738,7 +809,7 @@ class OasisProfileGenerator:
         """构建群体/机构实体的详细人设提示词"""
         
         attrs_str = json.dumps(entity_attributes, ensure_ascii=False) if entity_attributes else "无"
-        context_str = context[:3000] if context else "无额外上下文"
+        context_str = context[:6000] if context else "无额外上下文"
         
         return f"""为机构/群体实体生成详细的社交媒体账号设定,最大程度还原已有现实情况。
 
@@ -773,7 +844,13 @@ class OasisProfileGenerator:
 - persona必须是一段连贯的文字描述，不要使用换行符
 - {get_language_instruction()} (gender字段必须用英文"other")
 - age必须是整数30，gender必须是字符串"other"
-- 机构账号发言要符合其身份定位"""
+- 机构账号发言要符合其身份定位
+
+【接地要求 - 必须遵守】
+- 只使用上方「实体摘要 / 实体属性 / 上下文信息」中出现的事实
+- 关系网络必须来自上下文里的实体与关系，不要凭空发明合作方或竞争者
+- 对上下文没给出的细节，写成合理的推断，并避免给出精确数字/日期
+- persona 中至少明确写出：与哪些实体相关、官方立场、受什么约束"""
     
     def _generate_profile_rule_based(
         self,

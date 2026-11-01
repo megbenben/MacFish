@@ -128,6 +128,49 @@
         <div v-if="injectFeedback" class="inject-feedback" :class="injectOk ? 'ok' : 'fail'">
           {{ injectFeedback }}
         </div>
+
+        <!-- 同源分支：同一初始条件 + 指定轮次注入差异事件 -->
+        <div class="fork-row">
+          <input v-model="forkLabel" class="fork-input" type="text" :placeholder="$t('step3.forkLabelPlaceholder')" />
+          <input v-model="forkEvent" class="fork-input wide" type="text" :placeholder="$t('step3.forkEventPlaceholder')" />
+          <input v-model.number="forkRound" class="fork-round" type="number" min="0" :title="$t('step3.forkRoundHint')" />
+          <label class="fork-check">
+            <input v-model="forkAutoStart" type="checkbox" />
+            {{ $t('step3.forkAutoStart') }}
+          </label>
+          <button class="fork-btn" :disabled="forking" @click="handleFork">
+            {{ forking ? $t('step3.forking') : $t('step3.forkBtn') }}
+          </button>
+        </div>
+        <div v-if="forkFeedback" class="inject-feedback" :class="forkOk ? 'ok' : 'fail'">
+          {{ forkFeedback }}
+        </div>
+        <div v-if="forkMeta" class="fork-meta">
+          <span>{{ $t('step3.forkParent') }}: <b class="mono">{{ forkMeta.parent_simulation_id }}</b></span>
+          <span v-if="forkMeta.event_round !== undefined">{{ $t('step3.forkRoundLabel') }}: <b class="mono">{{ forkMeta.event_round }}</b></span>
+          <span>{{ $t('step3.forkInjection') }}: <b>{{ forkMeta.injection_status }}</b></span>
+          <button class="fork-compare-btn" :disabled="comparing" @click="handleCompare">
+            {{ comparing ? $t('step3.comparing') : $t('step3.compareBtn') }}
+          </button>
+        </div>
+        <div v-if="compareResult" class="compare-card">
+          <div class="compare-row"><span>{{ $t('step3.compareField') }}</span><b>{{ $t('step3.compareParent') }}</b><b>{{ $t('step3.compareBranch') }}</b></div>
+          <div class="compare-row">
+            <span>{{ $t('step3.compareActions') }}</span>
+            <b class="mono">{{ compareResult.a.actions.total_actions }}</b>
+            <b class="mono">{{ compareResult.b.actions.total_actions }}</b>
+          </div>
+          <div class="compare-row">
+            <span>YES</span>
+            <b class="mono">{{ formatPrice(compareResult.a.market.price_yes) }}</b>
+            <b class="mono">{{ formatPrice(compareResult.b.market.price_yes) }}</b>
+          </div>
+          <div class="compare-row">
+            <span>{{ $t('step3.compareVolume') }}</span>
+            <b class="mono">{{ compareResult.a.market.volume ?? '-' }}</b>
+            <b class="mono">{{ compareResult.b.market.volume ?? '-' }}</b>
+          </div>
+        </div>
       </div>
 
       <div class="action-controls">
@@ -163,6 +206,39 @@
           <span v-if="!isGeneratingReport" class="arrow-icon">→</span>
         </button>
       </div>
+    </div>
+
+    <!-- Prediction Market（由社群言论驱动的派生层） -->
+    <div v-if="market.enabled" class="market-bar">
+      <div class="market-main">
+        <div class="market-head">
+          <span class="market-kicker">PREDICTION MARKET</span>
+          <span class="market-question">{{ market.question }}</span>
+        </div>
+        <div class="market-metrics">
+          <span class="market-price yes">YES {{ formatPrice(market.price_yes) }}</span>
+          <span class="market-price no">NO {{ formatPrice(market.price_no) }}</span>
+          <span class="market-stat">{{ $t('step3.marketVolume') }} <b class="mono">{{ market.volume }}</b></span>
+          <span class="market-stat">{{ $t('step3.marketTrades') }} <b class="mono">{{ market.trades_count }}</b></span>
+        </div>
+      </div>
+      <svg class="market-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+        <polyline :points="marketSparkPoints" fill="none" stroke="#111827" stroke-width="1.5" />
+      </svg>
+      <div class="market-trades">
+        <span v-for="trade in (market.recent_trades || []).slice(0, 3)" :key="trade.trade_id" class="market-trade">
+          <b :class="trade.side === 'YES' ? 'yes' : 'no'">{{ trade.side }}</b>
+          {{ trade.agent }} · {{ formatPrice(trade.price_after) }}
+        </span>
+      </div>
+    </div>
+
+    <!-- News desk（派生视图：高互动帖子/评论） -->
+    <div v-if="news.length" class="news-bar">
+      <span class="news-kicker">NEWS DESK</span>
+      <span v-for="item in news.slice(0, 3)" :key="item.source_id" class="news-item">
+        <b>{{ item.platform }}</b> {{ item.title }}
+      </span>
     </div>
 
     <!-- Main Content: Dual Timeline -->
@@ -357,7 +433,12 @@ import {
   getRunStatus,
   getRunStatusDetail,
   estimateSimulationCost,
-  injectEvent
+  injectEvent,
+  getSimulationMarket,
+  getSimulationNews,
+  forkSimulation,
+  getSimulationFork,
+  compareSimulations
 } from '../api/simulation'
 import { generateReport } from '../api/report'
 
@@ -402,6 +483,111 @@ const injectPosterType = ref('')
 const injecting = ref(false)
 const injectFeedback = ref('')
 const injectOk = ref(true)
+
+// ── 预测市场 ──
+const market = ref({ enabled: false, price_yes: 0.5, price_no: 0.5, volume: 0, trades_count: 0, history: [], recent_trades: [] })
+
+const formatPrice = (value) => {
+  const number = Number(value)
+  return Number.isFinite(number) ? `${(number * 100).toFixed(1)}%` : '-'
+}
+
+const marketSparkPoints = computed(() => {
+  const history = market.value?.history || []
+  if (history.length < 2) return '0,17 120,17'
+  const prices = history.map(item => Number(item.price_yes) || 0)
+  const min = Math.min(...prices)
+  const max = Math.max(...prices)
+  const span = Math.max(max - min, 0.02)
+  return prices.map((price, index) => {
+    const x = history.length === 1 ? 0 : (index / (history.length - 1)) * 120
+    const y = 30 - ((price - min) / span) * 26
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+})
+
+const fetchMarket = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getSimulationMarket(props.simulationId)
+    if (res.success && res.data) market.value = res.data
+  } catch (err) {
+    console.warn('读取预测市场失败:', err)
+  }
+}
+
+const news = ref([])
+
+const fetchNews = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getSimulationNews(props.simulationId, 6)
+    if (res.success && res.data) news.value = res.data.headlines || []
+  } catch (err) {
+    console.warn('读取新闻摘要失败:', err)
+  }
+}
+
+// ── 分支 / A-B 对比 ──
+const forkLabel = ref('')
+const forkEvent = ref('')
+const forkRound = ref(0)
+const forkAutoStart = ref(true)
+const forking = ref(false)
+const forkFeedback = ref('')
+const forkOk = ref(true)
+const forkMeta = ref(null)
+const comparing = ref(false)
+const compareResult = ref(null)
+
+const loadForkMeta = async () => {
+  if (!props.simulationId) return
+  try {
+    const res = await getSimulationFork(props.simulationId)
+    if (res.success) forkMeta.value = res.data
+  } catch (err) {
+    // 不是分支时后端返回 404，忽略
+  }
+}
+
+const handleFork = async () => {
+  if (!props.simulationId || forking.value) return
+  forking.value = true
+  forkFeedback.value = ''
+  try {
+    const res = await forkSimulation(props.simulationId, {
+      label: forkLabel.value.trim(),
+      event: forkEvent.value.trim(),
+      event_round: Number(forkRound.value) || 0,
+      auto_start: forkAutoStart.value
+    })
+    forkOk.value = true
+    const newId = res.data?.simulation_id
+    forkFeedback.value = t('step3.forkOk', { id: newId })
+    emit('add-log', `Fork created: ${newId}`)
+    if (forkAutoStart.value && newId) {
+      router.push({ name: 'SimulationRun', params: { simulationId: newId } })
+    }
+  } catch (err) {
+    forkOk.value = false
+    forkFeedback.value = err.message || t('step3.forkFailed')
+  } finally {
+    forking.value = false
+  }
+}
+
+const handleCompare = async () => {
+  if (!forkMeta.value?.parent_simulation_id || comparing.value) return
+  comparing.value = true
+  try {
+    const res = await compareSimulations(forkMeta.value.parent_simulation_id, props.simulationId)
+    if (res.success) compareResult.value = res.data
+  } catch (err) {
+    addLog(`Compare failed: ${err.message}`)
+  } finally {
+    comparing.value = false
+  }
+}
 
 const handleInject = async () => {
   const content = injectContent.value.trim()
@@ -735,6 +921,8 @@ const fetchRunStatusDetail = async () => {
       // 不自动滚动，让用户自由查看时间轴
       // 新动作会在底部追加
     }
+    fetchMarket()
+    fetchNews()
   } catch (err) {
     console.warn('获取详细状态失败:', err)
   }
@@ -840,6 +1028,9 @@ onMounted(async () => {
   addLog(t('log.step3Init'))
   // 先等预估结果：此前两者并发发出，用户看到红色超额数字时钱已经在花了
   await fetchCostEstimate()
+  loadForkMeta()
+  fetchMarket()
+  fetchNews()
 
   if (!props.simulationId) return
 
@@ -848,6 +1039,37 @@ onMounted(async () => {
     addLog(t('log.budgetExceededHold', { total: costEstimate.value.remaining_total }))
     emit('update-status', 'warning')
     return
+  }
+
+  // 分支（auto_start）或刷新页面时模拟可能已经在跑/已结束。
+  // 无条件再 start 会撞上「已在运行中」，所以先查一次真实状态。
+  try {
+    const existing = await getRunStatus(props.simulationId)
+    if (existing.success && existing.data) {
+      const status = existing.data.runner_status
+      runStatus.value = existing.data
+      if (['running', 'starting', 'paused'].includes(status)) {
+        phase.value = 1
+        startStatusPolling()
+        startDetailPolling()
+        return
+      }
+      if (status === 'completed') {
+        phase.value = 2
+        startStatusPolling()
+        startDetailPolling()
+        emit('update-status', 'completed')
+        return
+      }
+      if (['stopped', 'failed', 'stalled'].includes(status)) {
+        phase.value = 3
+        startStatusPolling()
+        startDetailPolling()
+        return
+      }
+    }
+  } catch (err) {
+    console.warn('读取已有运行状态失败，按未开始处理:', err)
   }
 
   doStartSimulation()
@@ -1537,4 +1759,207 @@ onUnmounted(() => {
 
 .inject-feedback.ok { color: #2E7D32; }
 .inject-feedback.fail { color: #C62828; }
+
+/* --- Prediction Market --- */
+.market-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 10px 24px;
+  background: #FAFAFA;
+  border-top: 1px solid #E5E7EB;
+  border-bottom: 1px solid #E5E7EB;
+}
+
+.market-main { min-width: 0; flex: 1; }
+
+.market-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.market-kicker {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: #6B7280;
+}
+
+.market-question {
+  font-size: 12px;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.market-metrics {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.market-price {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'SF Mono', Menlo, monospace;
+}
+
+.market-price.yes, .market-trade b.yes { color: #166534; }
+.market-price.no, .market-trade b.no { color: #B91C1C; }
+
+.market-stat {
+  font-size: 11px;
+  color: #6B7280;
+}
+
+.market-stat b { color: #111827; }
+
+.market-spark {
+  width: 120px;
+  height: 34px;
+  flex: none;
+  border-left: 1px solid #E5E7EB;
+  padding-left: 12px;
+}
+
+.market-trades {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: none;
+  max-width: 230px;
+}
+
+.market-trade {
+  font-size: 10px;
+  color: #6B7280;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- News desk --- */
+.news-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 7px 24px;
+  background: #FFFFFF;
+  border-bottom: 1px solid #F3F4F6;
+  overflow: hidden;
+}
+
+.news-kicker {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: #9CA3AF;
+}
+
+.news-item {
+  font-size: 11px;
+  color: #4B5563;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 32%;
+}
+
+.news-item b {
+  color: #111827;
+  margin-right: 4px;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+/* --- Fork / Compare --- */
+.fork-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.fork-input {
+  font-size: 11px;
+  padding: 5px 8px;
+  border: 1px solid #D1D5DB;
+  border-radius: 3px;
+  min-width: 120px;
+}
+
+.fork-input.wide { min-width: 190px; }
+
+.fork-round {
+  width: 64px;
+  font-size: 11px;
+  padding: 5px 6px;
+  border: 1px solid #D1D5DB;
+  border-radius: 3px;
+}
+
+.fork-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #6B7280;
+}
+
+.fork-btn,
+.fork-compare-btn {
+  font-size: 11px;
+  padding: 5px 10px;
+  border: 1px solid #1F2937;
+  background: #1F2937;
+  color: #FFFFFF;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.fork-btn:disabled,
+.fork-compare-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.fork-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #6B7280;
+}
+
+.fork-meta b { color: #111827; }
+
+.fork-compare-btn {
+  background: #FFFFFF;
+  color: #1F2937;
+}
+
+.compare-card {
+  margin-top: 8px;
+  border: 1px solid #E5E7EB;
+  border-radius: 4px;
+  background: #FFFFFF;
+  padding: 8px 10px;
+  font-size: 11px;
+}
+
+.compare-row {
+  display: grid;
+  grid-template-columns: 1fr 90px 90px;
+  gap: 8px;
+  padding: 3px 0;
+  color: #6B7280;
+}
+
+.compare-row b { color: #111827; text-align: right; }
 </style>

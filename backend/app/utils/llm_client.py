@@ -6,7 +6,15 @@ LLM客户端封装
 import json
 import re
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
+from openai import (
+    OpenAI,
+    APIConnectionError,
+    APITimeoutError,
+    InternalServerError,
+    RateLimitError,
+)
+from ..config import Config
+from .retry import retry_with_backoff
 
 
 def _clean_think_tags(content: str) -> str:
@@ -58,7 +66,8 @@ class LLMClient:
 
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            timeout=Config.LLM_TIMEOUT,
         )
 
     @classmethod
@@ -66,6 +75,12 @@ class LLMClient:
         """为指定 provider 创建客户端（'network' 或 'local'）"""
         return cls(provider=provider)
 
+    @retry_with_backoff(
+        max_retries=Config.LLM_MAX_RETRIES,
+        initial_delay=Config.LLM_RETRY_INITIAL_DELAY,
+        max_delay=30.0,
+        exceptions=(APIConnectionError, APITimeoutError, RateLimitError, InternalServerError),
+    )
     def chat(
         self,
         messages: List[Dict[str, str]],

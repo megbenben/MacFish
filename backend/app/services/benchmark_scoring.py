@@ -26,6 +26,64 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 logger = logging.getLogger(__name__)
 
 #: 判定"稳定"的支持度阈值：N 次里至少 ceil(2N/3) 次出现
+def calibration_metrics(pairs: Sequence[tuple]) -> Dict[str, Any]:
+    """概率校准指标。
+
+    ``pairs`` 是 ``(probability, outcome)``：probability ∈ [0,1]，outcome ∈ {0,1}。
+    这是**唯一**能回答"预测有多准"而不是"报告有没有提到"的指标。
+
+    Brier 越低越好（0 完美）；log loss 对"自信地错"惩罚更重；可靠性表按
+    0.1 分桶对比 predicted vs observed。
+    """
+    clean = []
+    for prob, outcome in pairs:
+        try:
+            p = float(prob)
+            y = int(outcome)
+        except (TypeError, ValueError):
+            continue
+        if y not in (0, 1) or not (0.0 <= p <= 1.0):
+            continue
+        clean.append((p, y))
+
+    if not clean:
+        return {
+            'n': 0, 'brier_score': None, 'log_loss': None,
+            'reliability': [], 'note': '没有可用的 (probability, outcome) 配对',
+        }
+
+    eps = 1e-6
+    brier = sum((p - y) ** 2 for p, y in clean) / len(clean)
+    log_loss = -sum(
+        y * math.log(p + eps) + (1 - y) * math.log(1 - p + eps)
+        for p, y in clean
+    ) / len(clean)
+
+    bins = {}
+    for p, y in clean:
+        idx = min(9, int(p * 10))
+        bucket = bins.setdefault(idx, {'predicted': [], 'observed': []})
+        bucket['predicted'].append(p)
+        bucket['observed'].append(y)
+    reliability = []
+    for idx in sorted(bins):
+        bucket = bins[idx]
+        reliability.append({
+            'bin': f'{idx / 10:.1f}-{(idx + 1) / 10:.1f}',
+            'n': len(bucket['predicted']),
+            'predicted': round(sum(bucket['predicted']) / len(bucket['predicted']), 4),
+            'observed': round(sum(bucket['observed']) / len(bucket['observed']), 4),
+        })
+
+    return {
+        'n': len(clean),
+        'brier_score': round(brier, 4),
+        'log_loss': round(log_loss, 4),
+        'reliability': reliability,
+        'note': 'Brier / log loss 越低越好；仅统计裁判给出概率与引用的题目',
+    }
+
+
 def stability_threshold(n: int) -> float:
     if n <= 0:
         return 1.0
@@ -194,6 +252,8 @@ JUDGE_SYSTEM_PROMPT = """你是一个严格的预测报告评审专家。你将�
 - 只依据报告文本与 ground truth，不要引入你自己的外部知识
 - 每条判定都必须能引用报告中的原句作为依据；找不到原句就不要声称命中
 - 报告给出的方向与实际相反时，该项明确判错，不要含糊
+- 如果报告给出了概率/置信度（如"约 60%""高概率"），在 report_probability 里给出 0-1 的数值；
+  没有明确概率就填 null，不要替报告编一个
 - 特别关注"校准诚实度"：只给一个笃定结论的报告，比给出多个情景并附触发条件的报告，应当得分更低"""
 
 JUDGE_USER_PROMPT = """## 预测需求
@@ -214,7 +274,7 @@ JUDGE_USER_PROMPT = """## 预测需求
 请输出JSON（不要markdown）：
 {{
   "questions": [
-    {{"question_id": "...", "report_stance": "报告实际给出的选项值之一，或 null", "correct": true/false, "quote": "报告中的原句"}}
+    {{"question_id": "...", "report_stance": "报告实际给出的选项值之一，或 null", "report_probability": 0.0-1.0 或 null, "correct": true/false, "quote": "报告中的原句"}}
   ],
   "actors": [
     {{"name": "...", "mentioned": true/false, "consequential": true/false, "quote": "报告中的原句"}}
@@ -306,9 +366,23 @@ def _validate_judge_output(raw: Dict[str, Any], *, markdown: str, case) -> Dict[
             issues.append(f'{qid} 的 report_stance 不在 options 内: {stance}')
             stance = None
 
+        probability = None
+        raw_probability = item.get('report_probability')
+        if raw_probability is not None and stance is not None:
+            try:
+                probability = float(raw_probability)
+                # 兼容裁判写成 0-100 的情况
+                if probability > 1.0:
+                    probability = probability / 100.0
+                if not (0.0 <= probability <= 1.0):
+                    probability = None
+            except (TypeError, ValueError):
+                probability = None
+
         questions_out.append({
             'question_id': qid,
             'report_stance': stance,
+            'report_probability': probability,
             'correct': bool(item.get('correct')) and bool(quote),
             'quote': quote,
             'expected': expected_q[qid].get('answer'),
@@ -609,6 +683,20 @@ def build_scorecard(attempts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     def _collect(bucket: List[Dict[str, Any]], key: str) -> List[float]:
         return [a.get('offline_metrics', {}).get(key) for a in bucket]
 
+    # 概率校准只来自 LLM 裁判：裁判从报告里抽出"报告对该选项的概率"
+    # 与报告实际 stance，再对照 ground truth 的 answer 得到 0/1 结果。
+    calibration_pairs: List[Tuple[float, int]] = []
+    for attempt in eligible:
+        judge = attempt.get('llm_scores') or {}
+        for question in (judge.get('questions') or []):
+            probability = question.get('report_probability')
+            stance = question.get('report_stance')
+            expected = question.get('expected')
+            if probability is None or stance is None or expected is None:
+                continue
+            calibration_pairs.append((probability, 1 if stance == expected else 0))
+    calibration = calibration_metrics(calibration_pairs)
+
     card: Dict[str, Any] = {
         'schema_version': 1,
         'generated_at': datetime.now(timezone.utc).isoformat(),
@@ -622,6 +710,7 @@ def build_scorecard(attempts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             'event_term_recall': _mean(_collect(eligible, 'event_term_recall')),
             'number_grounding_rate': _mean(_collect(eligible, 'number_grounding_rate')),
         },
+        'calibration': calibration,
         'ineligible': [
             {
                 'case_id': a.get('case_id'),

@@ -3,6 +3,7 @@ Report API路由
 提供模拟报告生成、获取、对话等接口
 """
 
+import io
 import os
 import traceback
 import threading
@@ -59,16 +60,38 @@ def generate_report():
             }), 400
 
         force_regenerate = data.get('force_regenerate', False)
-        
+        allow_incomplete = data.get('allow_incomplete', False)
+
         # 获取模拟信息
         manager = SimulationManager()
         state = manager.get_simulation(simulation_id)
-        
+
         if not state:
             return jsonify({
                 "success": False,
                 "error": t('api.simulationNotFound', id=simulation_id)
             }), 404
+
+        # 报告要基于"模拟已经发生的结果"。运行中/暂停时落盘数据不完整，
+        # 直接生成会把半截过程当成结论。明确要求 allow_incomplete 才放行。
+        #
+        # 注意：模拟结束只更新 run_state.json，SimulationState.status 可能仍停在
+        # running/paused。必须优先看 runner_status，否则正常跑完的模拟会被误拦。
+        from ..services.simulation_runner import SimulationRunner
+        simulation_status = getattr(state.status, 'value', state.status)
+        run_state = None
+        try:
+            run_state = SimulationRunner.get_run_state(simulation_id)
+        except Exception as exc:
+            logger.debug(f"读取 runner 状态失败，退回 state.status: {exc}")
+        if run_state is not None:
+            simulation_status = getattr(run_state.runner_status, 'value', run_state.runner_status)
+
+        if simulation_status not in ('completed', 'stopped') and not allow_incomplete:
+            return jsonify({
+                "success": False,
+                "error": t('api.simulationNotFinished', status=simulation_status)
+            }), 409
 
         # 检查是否已有报告
         if not force_regenerate:
@@ -174,6 +197,16 @@ def generate_report():
                     logger.warning(f"写入运行清单失败: {manifest_error}")
 
                 if report.status == ReportStatus.COMPLETED:
+                    # 报告落盘后自动收存到冥想盆；同时补一次模拟收存，
+                    # 这样即使用户没等 run-status 轮询完就离开，记忆也不会缺。
+                    # 自动收存在后台线程里跑，失败只记日志，不影响报告任务。
+                    try:
+                        from ..services.pensieve_service import PensieveService
+                        PensieveService.auto_harvest('report', report.report_id)
+                        PensieveService.auto_harvest_simulation(simulation_id)
+                    except Exception as harvest_error:
+                        logger.warning(f"报告完成后自动收存失败: {harvest_error}")
+
                     task_manager.complete_task(
                         task_id,
                         result={
@@ -412,40 +445,50 @@ def list_reports():
 @report_bp.route('/<report_id>/download', methods=['GET'])
 def download_report(report_id: str):
     """
-    下载报告（Markdown格式）
-    
-    返回Markdown文件
+    下载报告。
+
+    ``?format=md``（默认）/ ``html`` / ``docx``：
+    - html 自带打印样式，浏览器可直接另存为 PDF
+    - docx 使用既有 python-docx 依赖，不引入 PDF 引擎
     """
     try:
         report = ReportManager.get_report(report_id)
-        
+
         if not report:
             return jsonify({
                 "success": False,
                 "error": t('api.reportNotFound', id=report_id)
             }), 404
-        
-        md_path = ReportManager._get_report_markdown_path(report_id)
-        
-        if not os.path.exists(md_path):
-            # 如果MD文件不存在，生成一个临时文件
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
-                f.write(report.markdown_content)
-                temp_path = f.name
-            
+
+        fmt = (request.args.get('format') or 'md').lower()
+        from ..services import report_export
+
+        if fmt == 'html':
+            content = report_export.to_html(report)
             return send_file(
-                temp_path,
+                io.BytesIO(content.encode('utf-8')),
+                mimetype='text/html; charset=utf-8',
                 as_attachment=True,
-                download_name=f"{report_id}.md"
+                download_name=f"{report_id}.html",
             )
-        
+        if fmt == 'docx':
+            content = report_export.to_docx(report)
+            return send_file(
+                io.BytesIO(content),
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                as_attachment=True,
+                download_name=f"{report_id}.docx",
+            )
+
+        # 默认 Markdown：优先落盘文件，缺失时现场生成
+        content = report_export.to_markdown(report)
         return send_file(
-            md_path,
+            io.BytesIO(content.encode('utf-8')),
+            mimetype='text/markdown; charset=utf-8',
             as_attachment=True,
-            download_name=f"{report_id}.md"
+            download_name=f"{report_id}.md",
         )
-        
+
     except Exception as e:
         logger.error(f"下载报告失败: {str(e)}")
         return jsonify({

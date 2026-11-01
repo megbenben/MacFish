@@ -77,3 +77,11 @@ export function getProject(projectId) {
     method: 'get'
   })
 }
+
+/**
+ * 人工修订本体（实体类型 / 关系类型）
+ * @param {Object} data - { project_id, entity_types, edge_types, analysis_summary? }
+ */
+export function updateOntology(data) {
+  return service.put('/api/graph/ontology', data)
+}

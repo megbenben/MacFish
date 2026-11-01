@@ -48,7 +48,7 @@
               
               <div class="section-body" v-show="!collapsedSections.has(idx)">
                 <!-- Completed Content -->
-                <div v-if="generatedSections[idx + 1]" class="generated-content" v-html="renderMarkdown(generatedSections[idx + 1])"></div>
+                <div v-if="generatedSections[idx + 1]" class="generated-content" v-html="renderMarkdown(generatedSections[idx + 1])" @click="onCitationClick"></div>
                 
                 <!-- Loading State -->
                 <div v-else-if="currentSectionIndex === idx + 1" class="loading-state">
@@ -89,6 +89,31 @@
                   <span class="scenario-sub-label">{{ $t('report.scenarioActors') }}</span>
                   <span v-for="(actor, aidx) in scenario.key_actors" :key="aidx" class="scenario-actor">{{ actor }}</span>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Citations：正文里的 [S1] 可以点回这里 -->
+          <div v-if="citations.length" class="citation-block">
+            <div class="citation-block-head">
+              <h2 class="citation-block-title">{{ $t('step4.citationsTitle') }}</h2>
+              <p class="citation-block-hint">{{ $t('step4.citationsHint') }}</p>
+            </div>
+            <div class="citation-list">
+              <div
+                v-for="item in citations"
+                :key="item.citation_id"
+                :id="`citation-${item.citation_id}`"
+                class="citation-item"
+                :class="{ 'is-flash': flashedCitation === item.citation_id }"
+              >
+                <span class="citation-id mono">{{ item.citation_id }}</span>
+                <span class="citation-meta">
+                  {{ item.kind }} · {{ item.platform }}
+                  <template v-if="item.agent"> · {{ item.agent }}</template>
+                  <template v-if="item.round !== null && item.round !== undefined"> · round {{ item.round }}</template>
+                </span>
+                <p class="citation-text">{{ item.content }}</p>
               </div>
             </div>
           </div>
@@ -166,6 +191,14 @@
             >
               {{ regenerating ? $t('step4.regeneratingBtn') : $t('step4.regenerateBtn') }}
             </button>
+          </div>
+
+          <!-- 导出：HTML 可直接打印成 PDF -->
+          <div v-if="isComplete" class="export-row">
+            <span class="export-label">{{ $t('step4.exportLabel') }}</span>
+            <a class="export-btn" :href="downloadUrl('md')">Markdown</a>
+            <a class="export-btn" :href="downloadUrl('html')">HTML / PDF</a>
+            <a class="export-btn" :href="downloadUrl('docx')">DOCX</a>
           </div>
 
           <!-- Next Step Button - 在完成后显示 -->
@@ -434,7 +467,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getAgentLog, getConsoleLog, generateReport } from '../api/report'
+import { getAgentLog, getConsoleLog, generateReport, getReport } from '../api/report'
 import { renderMarkdown } from '../utils/markdown'
 
 const router = useRouter()
@@ -453,6 +486,11 @@ const goToInteraction = () => {
   if (props.reportId) {
     router.push({ name: 'Interaction', params: { reportId: props.reportId } })
   }
+}
+
+const downloadUrl = (format) => {
+  if (!props.reportId) return '#'
+  return `/api/report/${encodeURIComponent(props.reportId)}/download?format=${format}`
 }
 
 // 报告生成失败后的出路：带 force_regenerate 让后端重跑一遍，
@@ -485,6 +523,8 @@ const consoleLogs = ref([])
 const agentLogLine = ref(0)
 const consoleLogLine = ref(0)
 const reportOutline = ref(null)
+const citations = ref([])
+const flashedCitation = ref('')
 const currentSectionIndex = ref(null)
 const generatedSections = ref({})
 const expandedContent = ref(new Set())
@@ -1981,6 +2021,32 @@ const getLogLevelClass = (log) => {
   return ''
 }
 
+// Citations
+const loadReportMeta = async () => {
+  if (!props.reportId) return
+  try {
+    const res = await getReport(props.reportId)
+    const data = res?.data || res
+    if (Array.isArray(data?.citations)) {
+      citations.value = data.citations
+    }
+  } catch (err) {
+    console.warn('Failed to load report citations:', err)
+  }
+}
+
+const onCitationClick = (event) => {
+  const citationId = event?.target?.dataset?.citation
+  if (!citationId) return
+  const target = document.getElementById(`citation-${citationId}`)
+  if (!target) return
+  flashedCitation.value = citationId
+  target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  window.setTimeout(() => {
+    if (flashedCitation.value === citationId) flashedCitation.value = ''
+  }, 1600)
+}
+
 // Polling
 let agentLogTimer = null
 let consoleLogTimer = null
@@ -2021,6 +2087,7 @@ const fetchAgentLog = async () => {
             currentSectionIndex.value = null  // 确保清除 loading 状态
             emit('update-status', 'completed')
             stopPolling()
+            loadReportMeta()
             // 滚动逻辑统一在循环结束后的 nextTick 中处理
           }
 
@@ -2155,6 +2222,7 @@ onMounted(() => {
   if (props.reportId) {
     addLog(`Report Agent initialized: ${props.reportId}`)
     startPolling()
+    loadReportMeta()
   }
 })
 
@@ -2169,6 +2237,8 @@ watch(() => props.reportId, (newId) => {
     agentLogLine.value = 0
     consoleLogLine.value = 0
     reportOutline.value = null
+    citations.value = []
+    flashedCitation.value = ''
     currentSectionIndex.value = null
     generatedSections.value = {}
     expandedContent.value = new Set()
@@ -3375,6 +3445,36 @@ watch(() => props.reportId, (newId) => {
   color: #065F46;
   font-weight: 600;
   font-size: 14px;
+}
+
+.export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 8px;
+}
+
+.export-label {
+  font-size: 12px;
+  color: #6B7280;
+  margin-right: 2px;
+}
+
+.export-btn {
+  font-size: 12px;
+  color: #374151;
+  background: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 4px;
+  padding: 5px 10px;
+  text-decoration: none;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.export-btn:hover {
+  border-color: #1F2937;
+  color: #111827;
 }
 
 .next-step-btn {
@@ -5178,6 +5278,92 @@ html[lang="en"] .report-header-block .main-title {
 <style scoped>
 /* ── 情景树 ──
    刻意做成卡片而非长文：情景是决策者要横向比较的对象，并排卡片比并列段落更容易扫读。 */
+:deep(.md-citation) {
+  display: inline-block;
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #C2410C;
+  background: #FFF7ED;
+  border: 1px solid #FDBA74;
+  border-radius: 3px;
+  padding: 0 4px;
+  margin: 0 2px;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+
+:deep(.md-citation:hover) {
+  background: #FFEDD5;
+  border-color: #FB923C;
+}
+
+.citation-block {
+  margin-top: 40px;
+  padding-top: 28px;
+  border-top: 1px solid #E5E7EB;
+}
+
+.citation-block-title {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 22px;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 6px 0;
+}
+
+.citation-block-hint {
+  font-size: 13px;
+  color: #6B7280;
+  margin: 0 0 18px 0;
+}
+
+.citation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.citation-item {
+  background: #FAFAFA;
+  border: 1px solid #E5E7EB;
+  border-radius: 4px;
+  padding: 12px 14px;
+  transition: background 0.25s, border-color 0.25s;
+}
+
+.citation-item.is-flash {
+  background: #FFF7ED;
+  border-color: #FB923C;
+}
+
+.citation-id {
+  display: inline-block;
+  min-width: 34px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #C2410C;
+  background: #FFF7ED;
+  border: 1px solid #FDBA74;
+  border-radius: 3px;
+  padding: 1px 5px;
+  margin-right: 8px;
+}
+
+.citation-meta {
+  font-size: 12px;
+  color: #6B7280;
+}
+
+.citation-text {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: #374151;
+  white-space: pre-wrap;
+}
+
 .scenario-block {
   margin-top: 48px;
   padding-top: 32px;

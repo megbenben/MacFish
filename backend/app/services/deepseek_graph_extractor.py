@@ -2,6 +2,7 @@
 DeepSeek 驱动的知识图谱提取器
 使用 LLM 从文本中提取实体、关系，并支持语义搜索
 """
+import concurrent.futures
 import json
 import re
 import uuid as uuid_mod
@@ -64,14 +65,36 @@ class DeepSeekGraphExtractor:
     def extract_from_batch(
         self, graph_id: str, texts: List[str], ontology: dict = None
     ) -> dict:
-        """批量提取，合并结果并去重"""
+        """批量提取，合并结果并去重。
+
+        同一批 chunk 之间没有依赖，串行跑会让图谱构建时间随文档长度线性增长。
+        这里按 ``GRAPH_EXTRACTION_CONCURRENCY`` 并发；每个线程各自持有 SQLite
+        连接（store 内部用 threading.local），写入失败只会丢掉该 chunk。
+        """
         all_nodes = {}
         all_edges = {}
+        pending = [t for t in texts if t and t.strip()]
+        if not pending:
+            return {"nodes": [], "edges": []}
 
-        for text in texts:
-            if not text or not text.strip():
-                continue
-            result = self.extract_from_text(graph_id, text, ontology)
+        workers = max(1, min(int(Config.GRAPH_EXTRACTION_CONCURRENCY or 1), len(pending)))
+        results = []
+        if workers == 1:
+            results = [self.extract_from_text(graph_id, text, ontology) for text in pending]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = [
+                    pool.submit(self.extract_from_text, graph_id, text, ontology)
+                    for text in pending
+                ]
+                for future in futures:
+                    try:
+                        results.append(future.result())
+                    except Exception as exc:
+                        # extract_from_text 内部已有兜底，这里只防御极端情况
+                        logger.warning(f"并发抽取失败: {exc}")
+
+        for result in results:
             for node in result.get("nodes", []):
                 key = node.name.lower().strip()
                 if key and key not in all_nodes:
@@ -196,7 +219,7 @@ class DeepSeekGraphExtractor:
 
 文本:
 ```
-{text[:3000]}
+{text[:Config.GRAPH_EXTRACTION_MAX_CHARS]}
 ```
 
 返回严格的 JSON 格式（不要包含 markdown 代码块）:

@@ -63,9 +63,34 @@ class Config:
     DEFAULT_CHUNK_SIZE = 500  # 默认切块大小
     DEFAULT_CHUNK_OVERLAP = 50  # 默认重叠大小
     MAX_CHUNK_SIZE = int(os.environ.get('MAX_CHUNK_SIZE', '20000'))  # 切块上限（防御异常请求）
-    
+
+    # 知识图谱抽取配置
+    # 单次抽取送入 LLM 的最大字符数。此前硬编码为 3000，而 chunk_size 最大
+    # 可配到 20000，导致超长 chunk 的后半段被静默丢弃。默认放到 12000，
+    # 仍保留上限以避免把上下文撑爆。
+    GRAPH_EXTRACTION_MAX_CHARS = int(os.environ.get('GRAPH_EXTRACTION_MAX_CHARS', '12000'))
+    # 同批 chunk 的并发抽取数。SQLite 用 WAL + busy_timeout，4 路并发足够。
+    GRAPH_EXTRACTION_CONCURRENCY = int(os.environ.get('GRAPH_EXTRACTION_CONCURRENCY', '4'))
+
+    # 人设生成缓存：同一实体 + 同一图谱上下文只生成一次，重建/重跑时复用
+    PERSONA_CACHE_ENABLED = os.environ.get('PERSONA_CACHE_ENABLED', 'true').lower() == 'true'
+    PERSONA_CACHE_DIR = os.path.join(os.path.dirname(__file__), '../uploads/cache/personas')
+
+    # LLM 调用可靠性
+    LLM_TIMEOUT = float(os.environ.get('LLM_TIMEOUT', '120'))
+    LLM_MAX_RETRIES = int(os.environ.get('LLM_MAX_RETRIES', '3'))
+    LLM_RETRY_INITIAL_DELAY = float(os.environ.get('LLM_RETRY_INITIAL_DELAY', '1.0'))
+
     # OASIS模拟配置
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
+    # 预测市场默认参数（可被 simulation_config.json 的 market 块覆盖）
+    MARKET_INITIAL_PROBABILITY = float(os.environ.get('MARKET_INITIAL_PROBABILITY', '0.5'))
+    MARKET_LIQUIDITY = float(os.environ.get('MARKET_LIQUIDITY', '20'))
+
+    # 单次模拟允许的最大轮数。LLM 生成的时间配置必须被夹在这个范围内，
+    # 否则 168h/30min = 336 轮会把调用量放大一个数量级。
+    OASIS_MAX_ROUNDS = int(os.environ.get('OASIS_MAX_ROUNDS', '72'))
+    OASIS_DEFAULT_TOTAL_HOURS = int(os.environ.get('OASIS_DEFAULT_TOTAL_HOURS', '24'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
     
     # OASIS平台可用动作配置

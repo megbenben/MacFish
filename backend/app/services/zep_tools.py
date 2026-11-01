@@ -20,6 +20,7 @@ from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
 from ..utils.locale import get_locale, t
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
+from .simulation_evidence import SimulationEvidenceService
 
 logger = get_logger('mirofish.zep_tools')
 
@@ -1303,7 +1304,8 @@ class ZepToolsService:
             InterviewResult: 采访结果
         """
         from .simulation_runner import SimulationRunner
-        
+
+        self._simulation_id_for_interview = simulation_id
         logger.info(t("console.interviewAgentsStart", requirement=interview_requirement[:50]))
         
         result = InterviewResult(
@@ -1387,6 +1389,21 @@ class ZepToolsService:
             if not api_result.get("success", False):
                 error_msg = api_result.get("error", "未知错误")
                 logger.warning(t("console.interviewApiReturnedFailure", error=error_msg))
+                # 模拟跑完后 OASIS 进程已被回收，live API 必然失败。
+                # 这里退回到"人设 + 落盘行为"的回放式回答，保证报告仍能拿到
+                # 第一人称材料，而不是直接丢失整个采访工具。
+                replay = self._interview_from_evidence(
+                    profiles=profiles,
+                    selected_agents=selected_agents,
+                    selected_indices=selected_indices,
+                    questions=result.interview_questions,
+                    combined_prompt=combined_prompt,
+                    interview_requirement=interview_requirement,
+                    result=result,
+                    reason=error_msg,
+                )
+                if replay is not None:
+                    return replay
                 result.summary = f"采访API调用失败：{error_msg}。请检查OASIS模拟环境状态。"
                 return result
             
@@ -1458,14 +1475,38 @@ class ZepToolsService:
             result.interviewed_count = len(result.interviews)
             
         except ValueError as e:
-            # 模拟环境未运行
+            # 模拟环境未运行（最常见：模拟已结束、进程已回收）
             logger.warning(t("console.interviewApiCallFailed", error=e))
+            replay = self._interview_from_evidence(
+                profiles=profiles,
+                selected_agents=selected_agents,
+                selected_indices=selected_indices,
+                questions=result.interview_questions,
+                combined_prompt=combined_prompt,
+                interview_requirement=interview_requirement,
+                result=result,
+                reason=str(e),
+            )
+            if replay is not None:
+                return replay
             result.summary = f"采访失败：{str(e)}。模拟环境可能已关闭，请确保OASIS环境正在运行。"
             return result
         except Exception as e:
             logger.error(t("console.interviewApiCallException", error=e))
             import traceback
             logger.error(traceback.format_exc())
+            replay = self._interview_from_evidence(
+                profiles=profiles,
+                selected_agents=selected_agents,
+                selected_indices=selected_indices,
+                questions=result.interview_questions,
+                combined_prompt=combined_prompt,
+                interview_requirement=interview_requirement,
+                result=result,
+                reason=str(e),
+            )
+            if replay is not None:
+                return replay
             result.summary = f"采访过程发生错误：{str(e)}"
             return result
         
@@ -1479,6 +1520,116 @@ class ZepToolsService:
         logger.info(t("console.interviewAgentsComplete", count=result.interviewed_count))
         return result
     
+    def _interview_from_evidence(
+        self,
+        *,
+        profiles: List[Dict[str, Any]],
+        selected_agents: List[Dict[str, Any]],
+        selected_indices: List[int],
+        questions: List[str],
+        combined_prompt: str,
+        interview_requirement: str,
+        result: InterviewResult,
+        reason: str = "",
+    ) -> Optional[InterviewResult]:
+        """模拟环境关闭后的回放式采访。
+
+        不再假装"实时采访"：用该 Agent 的人设 + 模拟期间落盘的帖子/评论/动作，
+        让 LLM 以第一人称复述立场；LLM 不可用时直接摘录原文。回答统一带
+        【回放模式】前缀，避免读者把回放当成新的模拟输出。
+        """
+        try:
+            items = SimulationEvidenceService.collect(self._simulation_id_for_interview)
+        except Exception as exc:
+            logger.warning(f"回放采访读取模拟证据失败: {exc}")
+            return None
+        if not items:
+            return None
+
+        by_agent: Dict[str, List[Dict[str, Any]]] = {}
+        for item in items:
+            agent_name = str(item.get('agent') or '').strip()
+            if agent_name:
+                by_agent.setdefault(agent_name, []).append(item)
+
+        built: List[AgentInterview] = []
+        for i, agent_idx in enumerate(selected_indices):
+            agent = selected_agents[i] if i < len(selected_agents) else {}
+            name = agent.get('realname') or agent.get('name') or agent.get('username') or f"Agent_{agent_idx}"
+            username = agent.get('username') or ''
+            profile = profiles[agent_idx] if 0 <= agent_idx < len(profiles) else {}
+            persona = (
+                profile.get('persona') or profile.get('user_char')
+                or profile.get('bio') or agent.get('bio') or ''
+            )
+            records = by_agent.get(name) or by_agent.get(username) or []
+            records = sorted(
+                records,
+                key=lambda x: (
+                    int(x.get('likes') or 0) + int(x.get('shares') or 0),
+                    str(x.get('timestamp') or ''),
+                ),
+                reverse=True,
+            )[:8]
+
+            if not records:
+                answer = (
+                    f"【回放模式】模拟记录中没有找到 {name} 的公开发言。"
+                    "以下只能依据人设推断，不能作为模拟证据引用。"
+                )
+                quotes: List[str] = []
+            else:
+                evidence_text = "\n".join(
+                    f"- [{r.get('platform')}] {r.get('kind')}：{r.get('content', '')[:600]}"
+                    for r in records
+                )
+                answer = ''
+                try:
+                    prompt = (
+                        f"你是「{name}」。以下是你的人设：\n{persona[:1200]}\n\n"
+                        f"以下是你在本次模拟中公开发表过的内容：\n{evidence_text}\n\n"
+                        f"采访问题：\n{combined_prompt}\n\n"
+                        "请以第一人称回答。只能基于上述人设与模拟记录，不要编造新事实。"
+                        "开头写「【回放模式】」。"
+                    )
+                    answer = self.llm.chat(
+                        messages=[
+                            {"role": "system", "content": "你正在以模拟 Agent 的身份回放其既有立场。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.4,
+                        max_tokens=1024,
+                    ) or ''
+                except Exception as exc:
+                    logger.debug(f"回放采访 LLM 失败，改用摘录: {exc}")
+                if not answer:
+                    answer = (
+                        "【回放模式】根据模拟记录，我的公开表态包括：\n"
+                        + "\n".join(f"- {r.get('content', '')[:300]}" for r in records[:4])
+                    )
+                quotes = [str(r.get('content', ''))[:150] for r in records[:3]]
+
+            built.append(AgentInterview(
+                agent_name=name,
+                agent_role=agent.get('profession') or profile.get('profession') or '未知',
+                agent_bio=(agent.get('bio') or profile.get('bio') or '')[:1000],
+                question=combined_prompt,
+                response=answer,
+                key_quotes=quotes,
+            ))
+
+        if not built:
+            return None
+        result.interviews = built
+        result.interviewed_count = len(built)
+        result.summary = (
+            "【回放模式】OASIS 环境不可用（"
+            + (reason[:120] or "模拟已结束")
+            + "），以下回答基于落盘人设与模拟期间的真实发言生成，不是新的实时采访。"
+        )
+        logger.info(f"回放采访完成: {len(built)} 位 Agent")
+        return result
+
     @staticmethod
     def _clean_tool_call_response(response: str) -> str:
         """清理 Agent 回复中的 JSON 工具调用包裹，提取实际内容"""
@@ -1505,11 +1656,8 @@ class ZepToolsService:
         import os
         import csv
         
-        # 构建人设文件路径
-        sim_dir = os.path.join(
-            os.path.dirname(__file__), 
-            f'../../uploads/simulations/{simulation_id}'
-        )
+        # 构建人设文件路径：跟其他服务一样走 Config，测试/自定义数据目录才能重定向
+        sim_dir = os.path.join(Config.OASIS_SIMULATION_DATA_DIR, simulation_id)
         
         profiles = []
         

@@ -14,7 +14,15 @@ from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.simulation_cleanup import (
+    delete_simulations as delete_simulations_service,
+    InvalidSimulationId,
+    SimulationRunningError,
+    SimulationDeletionError,
+)
 from ..services.simulation_config_generator import resolve_poster_agent_id
+from ..services.market_simulator import MarketSimulator
+from ..services.simulation_fork import SimulationForkService
 from ..services import cost_estimator
 from ..settings import runtime_settings
 from ..utils.logger import get_logger
@@ -22,6 +30,17 @@ from ..utils.locale import t, get_locale, set_locale
 from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
+
+
+def _auto_harvest_finished_simulation(run_state) -> None:
+    """发现模拟已结束就自动收存；重复轮询由服务端的标记文件挡住。"""
+    try:
+        status = getattr(getattr(run_state, 'runner_status', None), 'value', '')
+        if status in ('completed', 'stopped'):
+            from ..services.pensieve_service import PensieveService
+            PensieveService.auto_harvest_simulation(run_state.simulation_id)
+    except Exception as exc:
+        logger.warning("模拟完成后自动收存失败: %s", exc)
 
 
 # Interview prompt 优化前缀
@@ -207,6 +226,7 @@ def create_simulation():
             graph_id=graph_id,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
+            enable_market=data.get('enable_market', True),
         )
         
         return jsonify({
@@ -1073,6 +1093,62 @@ def get_simulation_history():
         }), 500
 
 
+@simulation_bp.route('/delete', methods=['POST'])
+def delete_simulation_history():
+    """永久删除历史模拟记录及其目录、文件。
+
+    请求（JSON）：
+        {"simulation_ids": ["sim_xxx", "sim_yyy"]}
+
+    删除范围：模拟目录、该模拟生成的报告；项目（上传的原始文档）与图谱只在
+    不再被其他历史记录引用时才删除。运行中的模拟会被整批拒绝（409）。
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        simulation_ids = data.get('simulation_ids')
+        if simulation_ids is None and data.get('simulation_id'):
+            simulation_ids = [data.get('simulation_id')]
+
+        if not isinstance(simulation_ids, list) or not simulation_ids:
+            return jsonify({
+                "success": False,
+                "error": t('api.requireSimulationIds')
+            }), 400
+
+        result = delete_simulations_service(simulation_ids)
+
+        return jsonify({
+            "success": True,
+            "data": result,
+            "message": t('api.simulationsDeleted', count=len(result["deleted"]))
+        })
+
+    except InvalidSimulationId as e:
+        return jsonify({
+            "success": False,
+            "error": t('api.invalidSimulationId', id=e.simulation_id)
+        }), 400
+    except SimulationRunningError as e:
+        return jsonify({
+            "success": False,
+            "error": t('api.simulationRunningCannotDelete',
+                       ids=', '.join(e.active_ids)),
+            "active_simulation_ids": e.active_ids
+        }), 409
+    except SimulationDeletionError as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"删除历史模拟失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
 @simulation_bp.route('/<simulation_id>/profiles', methods=['GET'])
 def get_simulation_profiles(simulation_id: str):
     """
@@ -1853,7 +1929,17 @@ def start_simulation():
         # 更新模拟状态
         state.status = SimulationStatus.RUNNING
         manager._save_simulation_state(state)
-        
+
+        # 重跑同一个 simulation_id 时清掉自动收存标记，结束后才能重新收存新动作
+        try:
+            marker = os.path.join(
+                SimulationManager.SIMULATION_DATA_DIR, simulation_id,
+                '.pensieve_harvested')
+            if os.path.exists(marker):
+                os.remove(marker)
+        except OSError as marker_error:
+            logger.warning(f"清理自动收存标记失败: {marker_error}")
+
         response_data = run_state.to_dict()
         if max_rounds:
             response_data['max_rounds_applied'] = max_rounds
@@ -1989,11 +2075,13 @@ def get_run_status(simulation_id: str):
                 }
             })
         
+        _auto_harvest_finished_simulation(run_state)
+
         return jsonify({
             "success": True,
             "data": run_state.to_dict()
         })
-        
+
     except Exception as e:
         logger.error(f"获取运行状态失败: {str(e)}")
         return jsonify({
@@ -2056,6 +2144,8 @@ def get_run_status_detail(simulation_id: str):
                 }
             })
         
+        _auto_harvest_finished_simulation(run_state)
+
         # 获取完整的动作列表
         all_actions = SimulationRunner.get_all_actions(
             simulation_id=simulation_id,
@@ -2381,6 +2471,150 @@ def get_simulation_comments(simulation_id: str):
 
 
 # ============== Interview 采访接口 ==============
+
+@simulation_bp.route('/<simulation_id>/news', methods=['GET'])
+def get_simulation_news(simulation_id: str):
+    """派生新闻头条：按互动量排序的高互动帖子/评论。"""
+    try:
+        state = SimulationManager().get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": t('api.simulationNotFound', id=simulation_id)
+            }), 404
+        from ..services.simulation_evidence import SimulationEvidenceService
+        limit = request.args.get('limit', 12, type=int)
+        return jsonify({"success": True, "data": SimulationEvidenceService.news_digest(simulation_id, limit)})
+    except Exception as exc:
+        logger.error(f"读取新闻摘要失败: {exc}")
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/market', methods=['GET'])
+def get_simulation_market(simulation_id: str):
+    """预测市场概览（价格、成交量、历史快照、最近成交）。
+
+    市场由社群言论驱动，不是独立的 OASIS 交易平台；GET 会顺带做一次增量处理，
+    这样即使监控线程已停止，也能读到最终状态。
+    """
+    try:
+        state = SimulationManager().get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": t('api.simulationNotFound', id=simulation_id)
+            }), 404
+        return jsonify({"success": True, "data": MarketSimulator.overview(simulation_id)})
+    except Exception as exc:
+        logger.error(f"读取预测市场失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/market/process', methods=['POST'])
+def process_simulation_market(simulation_id: str):
+    """立即增量处理动作日志（调试/补算用）。"""
+    try:
+        state = SimulationManager().get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": t('api.simulationNotFound', id=simulation_id)
+            }), 404
+        return jsonify({"success": True, "data": MarketSimulator.process(simulation_id)})
+    except Exception as exc:
+        logger.error(f"处理预测市场失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/fork', methods=['POST'])
+def fork_simulation(simulation_id: str):
+    """从同一初始条件创建分支，可选在指定轮次注入事件。
+
+    请求 JSON：
+        {
+          "label": "分支：监管介入",
+          "event": "监管机构发布价格合规提醒",
+          "event_round": 6,
+          "auto_start": true,
+          "platform": "parallel",
+          "max_rounds": 24
+        }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        result = SimulationForkService.fork(
+            simulation_id,
+            label=data.get('label') or '',
+            event=data.get('event') or '',
+            event_round=data.get('event_round') or 0,
+            auto_start=bool(data.get('auto_start', False)),
+            platform=data.get('platform') or '',
+            max_rounds=data.get('max_rounds'),
+        )
+        return jsonify({"success": True, "data": result})
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        logger.error(f"创建模拟分支失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/fork', methods=['GET'])
+def get_simulation_fork(simulation_id: str):
+    try:
+        meta = SimulationForkService.get_fork(simulation_id)
+        if meta is None:
+            return jsonify({
+                "success": False,
+                "error": t('api.forkNotFound', id=simulation_id)
+            }), 404
+        return jsonify({"success": True, "data": meta})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/forks', methods=['GET'])
+def list_simulation_forks(simulation_id: str):
+    try:
+        items = SimulationForkService.list_forks(simulation_id)
+        return jsonify({"success": True, "data": items, "count": len(items)})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@simulation_bp.route('/<simulation_id>/compare', methods=['GET'])
+def compare_simulations(simulation_id: str):
+    """A/B 对比：`?other_id=sim_xxx`。"""
+    other_id = (request.args.get('other_id') or '').strip()
+    if not other_id:
+        return jsonify({"success": False, "error": t('api.requireCompareTarget')}), 400
+    try:
+        result = SimulationForkService.compare(simulation_id, other_id)
+        return jsonify({"success": True, "data": result})
+    except LookupError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 404
+    except Exception as exc:
+        logger.error(f"模拟对比失败: {exc}")
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc()
+        }), 500
+
 
 @simulation_bp.route('/interview', methods=['POST'])
 def interview_agent():

@@ -52,6 +52,32 @@ uv run python scripts/run_benchmark.py validate --cases <case_id>
 校验通过后才允许执行。未通过的案卷会被 `run` 拒绝（除非显式 `--allow-unvalidated`，
 那样分数不计入头条统计）。
 
+## 用导入脚本落盘真实案卷
+
+手工拼 `case.json` 容易漏哈希或写错目录。导入脚本会复制语料、重算 sha256、
+登记 registry，并跑一遍防泄漏校验：
+
+```bash
+cd backend
+uv run python scripts/import_benchmark_case.py \
+  --spec /path/to/spec.json \
+  --corpus /path/to/corpus \
+  --case-id my_real_case_2025
+```
+
+`spec.json` 的字段与 `case.json` 相同（见上文），`ground_truth.json` 默认从
+spec 同目录读取。导入后按常规流程运行：
+
+```bash
+uv run python scripts/run_benchmark.py validate --cases my_real_case_2025
+uv run python scripts/run_benchmark.py run --cases my_real_case_2025 --repeats 1
+uv run python scripts/run_benchmark.py report --run-id <run_id>
+```
+
+记分卡里的 `calibration` 块（Brier / log loss / 可靠性分桶）只有在 LLM 裁判
+从报告中抽到 `report_probability` 时才有数字；没有概率就老实显示 `n: 0`，
+不会用代理指标冒充准确率。
+
 ## 防泄漏校验做了什么
 
 五项，全部确定性、可离线复现：

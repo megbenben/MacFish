@@ -74,7 +74,7 @@
           </div>
 
           <!-- Generated Entity Tags -->
-          <div v-if="projectData?.ontology?.entity_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
+          <div v-if="!isEditingOntology && projectData?.ontology?.entity_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
             <span class="tag-label">GENERATED ENTITY TYPES</span>
             <div class="tags-list">
               <span 
@@ -89,7 +89,7 @@
           </div>
 
           <!-- Generated Relation Tags -->
-          <div v-if="projectData?.ontology?.edge_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
+          <div v-if="!isEditingOntology && projectData?.ontology?.edge_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
             <span class="tag-label">GENERATED RELATION TYPES</span>
             <div class="tags-list">
               <span 
@@ -100,6 +100,57 @@
               >
                 {{ rel.name }}
               </span>
+            </div>
+          </div>
+
+          <!-- 本体人工修订 -->
+          <div v-if="currentPhase === 0 && projectData?.ontology" class="ontology-edit-bar">
+            <button v-if="!isEditingOntology" class="ontology-edit-btn" @click="startEditOntology">
+              {{ $t('step1.editOntology') }}
+            </button>
+          </div>
+
+          <div v-if="isEditingOntology" class="ontology-editor">
+            <div class="editor-group">
+              <span class="tag-label">{{ $t('step1.entityTypes') }}</span>
+              <div class="editor-tags">
+                <span v-for="(item, idx) in draftEntityTypes" :key="item.name" class="editor-tag">
+                  {{ item.name }}
+                  <button type="button" class="editor-remove" @click="removeDraftType('entity', idx)">×</button>
+                </span>
+                <input
+                  v-model="newEntityName"
+                  class="editor-input"
+                  :placeholder="$t('step1.addTypePlaceholder')"
+                  @keyup.enter="addDraftType('entity')"
+                />
+                <button type="button" class="editor-add" @click="addDraftType('entity')">+</button>
+              </div>
+            </div>
+            <div class="editor-group">
+              <span class="tag-label">{{ $t('step1.relationTypes') }}</span>
+              <div class="editor-tags">
+                <span v-for="(item, idx) in draftEdgeTypes" :key="item.name" class="editor-tag">
+                  {{ item.name }}
+                  <button type="button" class="editor-remove" @click="removeDraftType('relation', idx)">×</button>
+                </span>
+                <input
+                  v-model="newRelationName"
+                  class="editor-input"
+                  :placeholder="$t('step1.addTypePlaceholder')"
+                  @keyup.enter="addDraftType('relation')"
+                />
+                <button type="button" class="editor-add" @click="addDraftType('relation')">+</button>
+              </div>
+            </div>
+            <p v-if="ontologyError" class="editor-error">{{ ontologyError }}</p>
+            <div class="editor-actions">
+              <button type="button" class="editor-cancel" :disabled="savingOntology" @click="cancelEditOntology">
+                {{ $t('common.cancel') }}
+              </button>
+              <button type="button" class="editor-save" :disabled="savingOntology" @click="saveOntology">
+                {{ savingOntology ? $t('common.saving') : $t('common.save') }}
+              </button>
             </div>
           </div>
         </div>
@@ -158,7 +209,11 @@
         <div class="card-content">
           <p class="api-note">POST /api/simulation/create</p>
           <p class="description">{{ $t('step1.buildCompleteDesc') }}</p>
-          <button 
+          <label class="market-toggle">
+            <input v-model="enableMarket" type="checkbox" />
+            {{ $t('step1.enableMarket') }}
+          </label>
+          <button
             class="action-btn" 
             :disabled="currentPhase < 2 || creatingSimulation"
             @click="handleEnterEnvSetup"
@@ -191,6 +246,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { createSimulation } from '../api/simulation'
+import { updateOntology } from '../api/graph'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -204,11 +260,70 @@ const props = defineProps({
   systemLogs: { type: Array, default: () => [] }
 })
 
-defineEmits(['next-step'])
+const emit = defineEmits(['next-step', 'ontology-updated'])
 
 const selectedOntologyItem = ref(null)
+const isEditingOntology = ref(false)
+const draftEntityTypes = ref([])
+const draftEdgeTypes = ref([])
+const newEntityName = ref('')
+const newRelationName = ref('')
+const savingOntology = ref(false)
+const ontologyError = ref('')
+
+const startEditOntology = () => {
+  draftEntityTypes.value = [...(props.projectData?.ontology?.entity_types || [])]
+  draftEdgeTypes.value = [...(props.projectData?.ontology?.edge_types || [])]
+  ontologyError.value = ''
+  isEditingOntology.value = true
+}
+
+const cancelEditOntology = () => {
+  isEditingOntology.value = false
+  ontologyError.value = ''
+}
+
+const addDraftType = (kind) => {
+  const name = (kind === 'entity' ? newEntityName.value : newRelationName.value).trim()
+  if (!name) return
+  const list = kind === 'entity' ? draftEntityTypes : draftEdgeTypes
+  if (list.value.some(item => item.name === name)) return
+  list.value.push({ name })
+  if (kind === 'entity') newEntityName.value = ''
+  else newRelationName.value = ''
+}
+
+const removeDraftType = (kind, index) => {
+  const list = kind === 'entity' ? draftEntityTypes : draftEdgeTypes
+  list.value.splice(index, 1)
+}
+
+const saveOntology = async () => {
+  if (!props.projectData?.project_id || savingOntology.value) return
+  savingOntology.value = true
+  ontologyError.value = ''
+  try {
+    const res = await updateOntology({
+      project_id: props.projectData.project_id,
+      entity_types: draftEntityTypes.value,
+      edge_types: draftEdgeTypes.value,
+      analysis_summary: props.projectData.analysis_summary || ''
+    })
+    const data = res?.data || {}
+    emit('ontology-updated', {
+      ontology: data.ontology,
+      needs_rebuild: data.needs_rebuild
+    })
+    isEditingOntology.value = false
+  } catch (err) {
+    ontologyError.value = err.message || t('common.unknownError')
+  } finally {
+    savingOntology.value = false
+  }
+}
 const logContent = ref(null)
 const creatingSimulation = ref(false)
+const enableMarket = ref(true)
 
 // 进入环境搭建 - 创建 simulation 并跳转
 const handleEnterEnvSetup = async () => {
@@ -224,7 +339,8 @@ const handleEnterEnvSetup = async () => {
       project_id: props.projectData.project_id,
       graph_id: props.projectData.graph_id,
       enable_twitter: true,
-      enable_reddit: true
+      enable_reddit: true,
+      enable_market: enableMarket.value
     })
     
     if (res.success && res.data?.simulation_id) {
@@ -696,5 +812,133 @@ watch(() => props.systemLogs.length, () => {
 .log-msg {
   color: #CCC;
   word-break: break-all;
+}
+
+.market-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+  font-size: 12px;
+  color: #4B5563;
+}
+
+.ontology-edit-bar {
+  margin-top: 14px;
+}
+
+.ontology-edit-btn {
+  font-size: 12px;
+  color: #374151;
+  background: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  border-radius: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.ontology-edit-btn:hover {
+  border-color: #1F2937;
+}
+
+.ontology-editor {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px dashed #D1D5DB;
+  border-radius: 6px;
+  background: #FFFFFF;
+}
+
+.editor-group + .editor-group {
+  margin-top: 14px;
+}
+
+.editor-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.editor-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  background: #F3F4F6;
+  border: 1px solid #E5E7EB;
+  border-radius: 3px;
+  padding: 2px 4px 2px 8px;
+}
+
+.editor-remove {
+  border: 0;
+  background: transparent;
+  color: #9CA3AF;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.editor-remove:hover {
+  color: #B91C1C;
+}
+
+.editor-input {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #D1D5DB;
+  border-radius: 3px;
+  min-width: 160px;
+}
+
+.editor-add {
+  width: 24px;
+  height: 24px;
+  border: 1px solid #D1D5DB;
+  background: #FFFFFF;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.editor-error {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #B91C1C;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.editor-cancel,
+.editor-save {
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.editor-cancel {
+  background: #FFFFFF;
+  border: 1px solid #D1D5DB;
+  color: #374151;
+}
+
+.editor-save {
+  background: #1F2937;
+  border: 1px solid #1F2937;
+  color: #FFFFFF;
+}
+
+.editor-save:disabled,
+.editor-cancel:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

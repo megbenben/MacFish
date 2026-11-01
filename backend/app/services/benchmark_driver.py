@@ -179,7 +179,8 @@ class RealPipelineDriver:
         # 两个平台都开：_check_simulation_prepared 硬编码要求两个平台的人设文件，
         # 单平台会让那条就绪检查永远失败
         state = manager.create_simulation(
-            corpus.project_id, graph.graph_id, enable_twitter=True, enable_reddit=True)
+            corpus.project_id, graph.graph_id, enable_twitter=True, enable_reddit=True,
+            enable_market=False)
         manager.prepare_simulation(
             simulation_id=state.simulation_id,
             simulation_requirement=case.simulation_requirement,

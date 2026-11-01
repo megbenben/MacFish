@@ -111,9 +111,12 @@ class LocalGraphStore:
 
     def _get_conn(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(self.db_path)
+            # timeout + busy_timeout：并发抽取时多个线程会同时写库。
+            # WAL 只允许一个写者，没有 busy 等待会直接抛 "database is locked"。
+            self._local.conn = sqlite3.connect(self.db_path, timeout=30)
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA busy_timeout=30000")
             self._local.conn.execute("PRAGMA foreign_keys=ON")
         return self._local.conn
 

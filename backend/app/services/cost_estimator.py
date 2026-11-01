@@ -188,8 +188,30 @@ def estimate_for_simulation(
 
     platform_count = 1 if platform in ('twitter', 'reddit') else 2
 
+    # 图谱还没建时，chunk 阶段是剩余开销的一部分。以前这里固定传 0，
+    # 导致"prepare 前"的预估系统性偏低。chunk 数直接从项目抽取文本按默认
+    # 切块参数算；读不到就退回 0（不阻断预估）。
+    completed = _completed_stages(simulation_id, state.project_id)
+    chunk_count = 0
+    chunk_source = 'not needed (graph completed)'
+    if 'graph' not in completed:
+        try:
+            paths = run_manifest.run_artifact_paths(simulation_id, state.project_id)
+            text_path = paths.get('extracted_text_path')
+            if text_path and os.path.isfile(text_path):
+                from .text_processor import TextProcessor
+                with open(text_path, 'r', encoding='utf-8', errors='ignore') as handle:
+                    text = handle.read()
+                chunk_count = len(TextProcessor.split_text(
+                    text, Config.DEFAULT_CHUNK_SIZE, Config.DEFAULT_CHUNK_OVERLAP
+                ))
+                chunk_source = f'extracted_text.txt ({chunk_count} chunks)'
+        except Exception as exc:
+            logger.debug('chunk 数估算失败（按 0 处理）: %s', exc)
+            chunk_source = 'unknown(0)'
+
     result = estimate_calls(
-        chunk_count=0,  # 图谱阶段若已完成则不计入剩余；未完成时按 0 保守处理
+        chunk_count=chunk_count,
         entity_count=entity_count,
         total_rounds=rounds,
         platform_count=platform_count,
@@ -207,6 +229,7 @@ def estimate_for_simulation(
         'remaining_stages': remaining,
         'remaining_total': sum(remaining.values()),
         'entity_count_source': entity_source,
+        'chunk_count_source': chunk_source,
         'total_rounds_source': rounds_source,
         'platform': platform,
     })
